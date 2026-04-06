@@ -1,0 +1,110 @@
+{
+  "dashboard_id": null,
+  "project_id": "00000000-0000-0000-0000-000000000000",
+  "dashboardName": "Dashboard Corporativo",
+  "reportTitle": "Dashboard Corporativo",
+  "reportDescription": "Evolucao incremental do dashboard corporativo.",
+  "dataDomain": "Comercial",
+  "domainDataOwner": "owner@empresa.com",
+  "dataConfidentiality": "INTERNAL",
+  "crawlerFrequency": "daily",
+  "sessionAuthor": "frontend-local",
+  "currentVersion": "v2.0 (Rascunho)",
+  "currentDashboardState": "DRAFT",
+  "previousUserPrompts": [
+    "Quero uma visao executiva de receita por regiao.",
+    "Adicione comparativo mensal e destaque anomalias."
+  ],
+  "currentUserPrompt": "Agora foque em rentabilidade por segmento e canal.",
+  "templatePrompt": "",
+  "masterPrompt": "",
+  "reportMetadata": {
+    "activeTabId": "v2.0",
+    "tabsCount": 2
+  },
+  "datasets": [
+    {
+      "id": "dataset-1",
+      "name": "vendas_abril",
+      "source_type": "CSV",
+      "row_count": 1500,
+      "column_count": 7,
+      "schema_json": {
+        "column_count": 7,
+        "columns": [
+          {
+            "name": "regiao",
+            "type": "TEXT",
+            "description": "Regiao comercial"
+          },
+          {
+            "name": "segmento",
+            "type": "TEXT",
+            "description": "Segmento de cliente"
+          },
+          {
+            "name": "canal",
+            "type": "TEXT",
+            "description": "Canal de venda"
+          },
+          {
+            "name": "receita",
+            "type": "REAL",
+            "description": "Valor de receita"
+          },
+          {
+            "name": "custo",
+            "type": "REAL",
+            "description": "Valor de custo"
+          }
+        ]
+      },
+      "sample_json": [
+        {
+          "regiao": "Norte",
+          "segmento": "PME",
+          "canal": "Online",
+          "receita": 1000,
+          "custo": 650
+        }
+      ],
+      "selectedCols": [
+        "regiao",
+        "segmento",
+        "canal",
+        "receita",
+        "custo"
+      ]
+    }
+  ],
+  "semanticRelationships": [
+    {
+      "source": "vendas_abril",
+      "target": "clientes_base",
+      "sourceKey": "cliente_id",
+      "targetKey": "id",
+      "type": "Left"
+    }
+  ],
+  "knowledgeBasePromptHints": [
+    "template html padrao corporativo",
+    "layout executivo institucional",
+    "paleta de cores corporativa",
+    "padrao de componentes visual",
+    "Comercial"
+  ],
+  "existingDashboardHtml": "<html><body><h1>Versao anterior</h1></body></html>",
+  "frontendComponentContract": {
+    "expectsStandaloneHtml": true,
+    "renderMode": "iframe-srcdoc"
+  },
+  "visualLayoutRules": {
+    "style": "executive-corporate",
+    "preserveExistingStructure": true
+  },
+  "outputFormatRules": {
+    "requireValidJson": true,
+    "preserveDraftFlow": true
+  },
+  "query": "Agora foque em rentabilidade por segmento e canal."
+}

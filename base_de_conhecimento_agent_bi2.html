@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Agent-BI: Base de Conhecimento e Governança Corporativa</title>
+    <style>
+        body { 
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; 
+            max-width: 900px; 
+            margin: 0 auto; 
+            color: #333; 
+            padding: 40px; 
+            line-height: 1.6;
+        }
+        .header { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            border-bottom: 3px solid #005f9e; 
+            padding-bottom: 20px; 
+            margin-bottom: 40px; 
+        }
+        .logos {
+            display: flex;
+            align-items: center;
+            gap: 30px;
+        }
+        .logo-aws { height: 50px; }
+        .logo-ntt { height: 40px; }
+        h1 { color: #002b49; font-size: 2.2em; margin-bottom: 5px; }
+        h2 { color: #005f9e; margin-top: 40px; border-bottom: 1px solid #ddd; padding-bottom: 10px; }
+        h3 { color: #232f3e; }
+        .subtitle { color: #666; font-style: italic; margin-top: 0; }
+        .rules-container { 
+            background-color: #f4f7f9; 
+            padding: 25px; 
+            border-radius: 8px; 
+            border-left: 5px solid #005f9e; 
+            margin: 20px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        .rule-item { margin-bottom: 15px; }
+        .rule-item strong { color: #002b49; }
+        .footer { 
+            margin-top: 60px; 
+            font-size: 0.85em; 
+            color: #777; 
+            text-align: center; 
+            border-top: 1px solid #ddd; 
+            padding-top: 20px; 
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <div>
+            <h1>Agent-BI</h1>
+            <p class="subtitle">Diretrizes Base de Conhecimento e Governança de IA</p>
+        </div>
+        <div class="logos">
+            <!-- Referências remotas para as logos reais -->
+            <p><strong>ATENÇÃO LLM:</strong> Você DEVE obrigatoriamente incluir no topo do seu HTML gerado as duas logos institucionais abaixo usando as tags exatas:</p>
+            <p>1. <code>&lt;img src="https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/NTT_Data_logo.svg/320px-NTT_Data_logo.svg.png" alt="NTT DATA" style="height:40px" /&gt;</code></p>
+            <p>2. <code>&lt;img src="https://upload.wikimedia.org/wikipedia/commons/thumb/9/93/Amazon_Web_Services_Logo.svg/200px-Amazon_Web_Services_Logo.svg.png" alt="AWS" style="height:50px" /&gt;</code></p>
+        </div>
+    </div>
+
+    <h2>1. Visão Geral e Propósito</h2>
+    <p>
+        Este documento constitui a <strong>Base de Conhecimento Primária (Knowledge Base)</strong> para os Agentes do <b>Agent-BI</b>, uma plataforma analítica desenvolvida em parceria com a <b>NTT DATA</b> e com arquitetura em nuvem utilizando tecnologias de ponta da <b>Amazon Web Services (AWS)</b>, especialmente o <b>Amazon Bedrock</b>.
+    </p>
+    <p>
+        O propósito destas regras é garantir que toda e qualquer inferência realizada por meio dos LLMs mantenha a governança de dados estrita, a identidade corporativa e o rigor analítico necessários para o ambiente corporativo C-Level.
+    </p>
+
+    <h2>2. Princípios de Interpretação de Dados pelo Agente</h2>
+    <div class="rules-container">
+        <div class="rule-item">
+            <strong>🔴 Precisão Matemática Absoluta (Zero Alucinação):</strong>
+            <p>O agente jamais deve inventar ou estimar números que não existam diretamente nas tabelas submetidas ou cálculos derivados lógicos. Se a resposta for incerta, afirme que "os dados não possuem essa profundidade no cenário atual".</p>
+        </div>
+        <div class="rule-item">
+            <strong>🔵 Narrativa Voltada para Negócios:</strong>
+            <p>Sintetize informações cruas enfatizando "O que ocorreu" e "Como isso impacta o negócio" sem se perder em explicações longas de infraestrutura, a não ser que requisitado.</p>
+        </div>
+        <div class="rule-item">
+            <strong>🟢 Neutralidade e Compliance:</strong>
+            <p>Mantenha sempre um tom neutro, objetivo, profissional e técnico, alinhado aos padrões éticos de compliance e auditoria praticados por parceiros NTT DATA e ecossistema AWS.</p>
+        </div>
+    </div>
+
+    <h2>3. Arquitetura Analítica de Referência</h2>
+    <p>Sempre que o agente precisar construir relatórios visuais (Dashboards), ele deve considerar as seguintes referências estruturais para geração de HTML ou propostas SQL:</p>
+    <ul>
+        <li><b>Foco em Indicadores (KPIs):</b> Métricas chave de performance devem aparecer sempre destacadas no topo sugerido.</li>
+        <li><b>Correlação Temporal e Temática:</b> Buscar demonstrar evoluções percentuais entre agrupamentos quando o dataset permitir, evidenciando o crescimento de volume ou de categorias.</li>
+        <li><b>SQL Auditável:</b> Toda lógica gerada via NL2SQL deve sempre refletir exatamente os campos sem aspas duplas desnecessárias que causem falhas, buscando otimização de joins (sempre limitando a 20 registros para protótipos rápidos).</li>
+    </ul>
+
+    <h2>4. Metadados e Relacionamento Multi-Tabela</h2>
+    <p>Se as variáveis ou contextos do banco de dados mostrarem ligações (ex: <i>userId</i> ligando a uma tabela <i>Users</i>), o Agente de IA possui permissão para propor junções (Inner e Left Joins) afim de enriquecer os insights. O cruzamento deve ter o objetivo único de ampliar a inteligência da informação e resolver gargalos no fluxo da plataforma.</p>
+
+    <div class="footer">
+        <p>Desenvolvido para o programa Agent-BI Enterprise. Confidencial.</p>
+        <p>Documento processável via AWS Bedrock Knowledge Base Parser.</p>
+    </div>
+
+</body>
+</html>
