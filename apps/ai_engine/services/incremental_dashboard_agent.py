@@ -25,6 +25,10 @@ from apps.datasets.services.sqlite_analytics_store import (
     build_sqlite_table_name,
 )
 
+from apps.ai_engine.agents.supervisor_agent import SupervisorAgent
+from apps.ai_engine.agents.pandas_analytics_agent import PandasAnalyticsAgent
+from apps.ai_engine.agents.rag_knowledge_agent import RAGKnowledgeAgent
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,6 +82,37 @@ class IncrementalDashboardAgentService:
                 "cols": ds.get("column_count"),
                 "temporal": is_temp
             })
+
+        # --- MULTI-AGENT ROUTING ---
+        trace.start_step("Supervisor: Routing")
+        supervisor = SupervisorAgent()
+        routing_decision = supervisor.determine_route(
+            user_prompt=context.get("currentUserPrompt", ""),
+            datasets_metadata=ds_stats
+        )
+        route_selected = routing_decision.get("route", "ROUTE_NL2SQL")
+        trace.end_step("Supervisor: Routing", message=f"Rota Dinâmica: {route_selected} - {routing_decision.get('reasoning', '')}", metadata={"routing_decision": routing_decision})
+        
+        context["routing_decision"] = routing_decision
+        
+        trace.start_step(f"Especialista: {route_selected}")
+        if route_selected == "ROUTE_PANDAS":
+            pandas_agent = PandasAnalyticsAgent()
+            profiles = [ds.get("data_profile", {}) for ds in context.get("datasets", [])]
+            p_result = pandas_agent.analyze(context.get("currentUserPrompt", ""), profiles)
+            context["specialist_insights"] = p_result.get("analysis", "")
+            trace.end_step(f"Especialista: {route_selected}", message="Análise estatística pré-computada concluída.", metadata=p_result)
+            
+        elif route_selected == "ROUTE_KB_RAG":
+            rag_agent = RAGKnowledgeAgent()
+            rag_snippets = [snip.get("text", "") for snip in context.get("ragRetrievedContext", []) if snip.get("text")]
+            r_result = rag_agent.query_knowledge(context.get("currentUserPrompt", ""), "\n".join(rag_snippets))
+            context["specialist_insights"] = r_result.get("answer", "")
+            trace.end_step(f"Especialista: {route_selected}", message="Busca semântica conceitual concluída.", metadata=r_result)
+            
+        else:
+            trace.end_step(f"Especialista: {route_selected}", message="Encaminhando p/ Orquestração de Tabelas (NL2SQL).", status="INFO")
+        # ---------------------------
 
         strict_bedrock = bool(request_data.get("requireBedrock", False))
         response = None
@@ -293,11 +328,17 @@ class IncrementalDashboardAgentService:
         if feature_hints:
             hints_block = "\nRECURSOS DE DADOS DISPONIVEIS:\n" + "\n".join([f"- {h}" for h in feature_hints]) + "\n"
 
+        specialist_text = ""
+        if context.get("specialist_insights"):
+            specialist_text = "\n===== INSIGHTS DO ESPECIALISTA (GERADOS PELO PANDAS/RAG - UTILIZE COPIANDO ISTO ESTRITAMENTE PARA OS FOOTER INSIGHTS OU DESCRIÇÃO) =====\n"
+            specialist_text += context["specialist_insights"] + "\n========================================================================================================================\n"
+
         return (
             "Evolua incrementalmente o dashboard abaixo.\n"
             "Analise primeiro a aplicacao existente e retorne apenas JSON valido no contrato obrigatorio.\n"
             f"{rag_block}\n"
             f"{hints_block}\n"
+            f"{specialist_text}\n"
             "===== CONTEXTO ANALITICO (dados, schema, prompts do usuario) =====\n"
             f"{json.dumps(payload, ensure_ascii=False, default=str, indent=2)}"
         )
