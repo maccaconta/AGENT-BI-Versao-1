@@ -1,6 +1,6 @@
 # AGENT-BI - Contexto Mestre
 
-Data da fotografia: 2026-04-06 (Atualizada com Dev HUD e Governança)
+Data da fotografia: 2026-04-07 (Atualizada com Planejamento Multiagente Analítico)
 Workspace: `C:\Users\mmaccafe\Documents\Agent-BI`
 
 ## Objetivo deste arquivo
@@ -37,13 +37,10 @@ Estado real atual:
 
 - o backend tem boa base de dominio, datasets, auditoria e governanca;
 - o frontend tem UX forte e um fluxo de projeto funcional para testes locais;
-- o backend ja possui uma terceira etapa de maturidade concluida:
-  - sistema de **Transparência de IA (Dev HUD)** implementado;
-  - instrumentação de tempo (ms) e tokens (I/O) em tempo real;
-  - rastreamento granular de ingestão e geração de insights;
-  - governança de dados com toggles para perfilamento (Temporal, Correlação, Anomalia);
+- o backend já possui a terceira etapa (Transparência/Dev HUD) solidificada;
+- **Fase Atual (Abril/2026):** Refatoração da Orquestração Multiagente para especialização analítica (NL2SQL + Pandas Calculation), visando eliminar dashboards genéricos e focar no domínio dos dados.
 - o contrato de resposta do agente foi ampliado e monitorado;
-- o frontend agora possui um monitor flutuante (Dev HUD) para feedback técnico imediato.
+- o frontend possui monitor flutuante (Dev HUD) funcional para feedback técnico.
 
 ## Stack real
 
@@ -799,6 +796,13 @@ Teste de integracao API para modo local sem AWS:
    - ajustar parser/normalizacao se necessario para tolerar pequenas variacoes sem perder rastreabilidade;
    - manter `requireBedrock=true` nos testes de aceitacao.
 
+4. **Nova Prioridade: Refatoração Multiagente Analítica**
+   - Transicionar de serviços heurísticos para Agentes Especialistas reais.
+   - Criar `NL2SQLAgent` para queries complexas via LLM.
+   - Evoluir `PandasAnalyticsAgent` para execução de código Python (Cálculo).
+   - Implementar `PandasExecutorService` para extração e cálculo sobre SQLite.
+   - Refatorar `IncrementalDashboardAgentService` para orquestração delegada.
+
 4. Consolidar operacao Bedrock em scripts:
    - usar `scripts/aws/update_bedrock_agent_model.ps1` para futuras trocas de modelo;
    - manter `scripts/aws/bedrock_commands_with_created_ids.ps1` atualizado com IDs/aliases ativos;
@@ -928,3 +932,6 @@ Antes de propor mudancas:
 4. lembre que no `local_fast` a SQL e validada em SQLite sobre amostra local;
 5. mantenha o fluxo de etapas claro para o usuario final.
 ```
+
+# Referencia Multiagente
+Para detalhes da refatoracao de agentes analiticos em curso, consulte: [MULTI_AGENT_REFACTORING.me](file:///c:/Users/mmaccafe/Documents/Agent-BI/MULTI_AGENT_REFACTORING.me)

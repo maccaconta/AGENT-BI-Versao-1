@@ -118,6 +118,7 @@ class ParquetService:
                 "nullable": df[col].isna().any(),
                 "null_count": int(df[col].isna().sum()),
                 "sample_values": self._get_sample_values(df[col]),
+                "description": f"{col}"
             })
 
         return {

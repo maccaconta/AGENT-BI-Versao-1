@@ -6,52 +6,76 @@ from apps.ai_engine.services.bedrock_service import BedrockService
 
 logger = logging.getLogger(__name__)
 
-RAG_AGENT_SYSTEM_PROMPT = """Você é o Especialista Semântico de Base de Conhecimento Corporativa da NTT DATA - Agent-BI.
-Sua única responsabilidade é localizar respostas precisas em manuais, regras de negócios e diretrizes (extraídos da Base de Conhecimento) para perguntas operacionais e conceituais do usuário.
-Você deve responder diretamente a pergunta de forma didática, concisa e aderente à marca NTT DATA.
+RAG_AGENT_SYSTEM_PROMPT = """Você é o Consultor de Diretrizes e Regras de Negócio da NTT DATA - Agent-BI.
+Sua missão é interpretar o contexto da Base de Conhecimento para fornecer orientações precisas ao orquestrador de dashboards.
 
-Se a Base de Conhecimento (Contexto) não fornecer as respostas, NÃO invente dados. Diga que as diretrizes não especificam essa regra.
+Você deve extrair:
+1. **Regras de Negócio**: Como calcular métricas específicas mencionadas no contexto.
+2. **Identidade Visual**: Logos, cores e padrões de design obrigatórios.
+3. **Tom de Voz**: Como os insights devem ser redigidos (ex: executivo, técnico, cauteloso).
+
+## Saída Exigida (JSON):
+Retorne um JSON válido com:
+{
+  "guidelines": "Resumo das regras e padrões identificados para o dashboard",
+  "visual_assets": ["lista", "de", "urls", "ou", "logos"],
+  "business_rules": "Explicação de fórmulas ou lógicas de negócio encontradas",
+  "answer": "Resposta direta para a pergunta do usuário se aplicável"
+}
 """
 
 class RAGKnowledgeAgent:
     """
-    Sub-Agente especializado em isolar a chamda RAG do Bedrock para perguntas de diretrizes institucionais.
+    Assistente ativo que interpreta a base de conhecimento para extrair regras e padrões.
+    Pode atuar como ponte para o AWS Bedrock Agent oficial.
     """
     def __init__(self):
         self.bedrock_service = BedrockService()
 
-    def query_knowledge(self, user_prompt: str, rag_context: str = "") -> Dict[str, Any]:
+    def query_knowledge(self, user_prompt: str, rag_context: str = "", trace=None) -> Dict[str, Any]:
         """
-        Responde a uma pergunta baseada estritamente no rag_context obtido previamente (ex: Retrieve do Bedrock).
+        Interpreta o contexto RAG e retorna diretrizes estruturadas.
         """
-        logger.info("[RAG_Agent] Buscando respostas no contexto da base de conhecimento.")
+        logger.info("[Assistente_RAG] Interpretando diretrizes da base de conhecimento.")
         
+        if trace:
+            trace.log_thought("Assistente RAG", "Consultando a Base de Conhecimento (AWS Bedrock Agent) para alinhar o dashboard às regras de negócio e identidade visual.")
+
         prompt = f"""
-Pergunta Corporativa: "{user_prompt}"
+Pergunta do Usuário: "{user_prompt}"
 
-=== Contexto Recuperado (RAG) ===
-{rag_context if rag_context else "Nenhum contexto recuperado da base de conhecimento."}
-=================================
+=== Contexto Recuperado da Base de Conhecimento ===
+{rag_context if rag_context else "Nenhum contexto recuperado."}
+=================================================
 
-Por favor, responda baseando-se única e exclusivamente no contexto provido acima.
+Extraia as diretrizes e regras conforme as instruções do sistema.
         """
         
         try:
-            response_text = self.bedrock_service.generate_text(
-                prompt=prompt,
+            if trace:
+                trace.start_step("AWS Bedrock Agent: Recuperação")
+
+            result = self.bedrock_service.invoke_with_json_output(
                 system_prompt=RAG_AGENT_SYSTEM_PROMPT,
-                max_tokens=1500
+                user_message=prompt,
+                temperature=0.1
             )
             
+            if trace:
+                trace.end_step("AWS Bedrock Agent: Recuperação", message="Conhecimento corporativo recuperado com sucesso.", metadata=result)
+
             return {
-                "specialist": "KB_RAG",
-                "answer": response_text
+                "specialist": "ASSISTENTE_RAG",
+                **result
             }
             
         except Exception as e:
-            logger.error(f"[RAG_Agent] Falha na consulta RAG: {e}")
+            logger.error(f"[Assistente_RAG] Falha na interpretação RAG: {e}")
+            if trace:
+                trace.quick_log(trace.trace_id, trace.job_type, "Assistente RAG: Erro", str(e), status="ERROR")
             return {
-                "specialist": "KB_RAG",
+                "specialist": "ASSISTENTE_RAG",
                 "error": str(e),
-                "answer": "Não foi possível recuperar a informação nas diretrizes corporativas devido a um erro de serviço."
+                "answer": "Falha ao processar diretrizes corporativas.",
+                "guidelines": ""
             }

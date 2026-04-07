@@ -62,3 +62,17 @@ class TraceService:
             message=message,
             **kwargs
         )
+
+    def log_thought(self, assistant_name: str, thought: str, metadata: dict = None):
+        """
+        Registra o raciocínio/pensamento de um assistente analítico.
+        Essas mensagens aparecem com destaque no DevHUD para provar a autonomia.
+        """
+        ExecutionTrace.objects.create(
+            trace_id=self.trace_id,
+            job_type=self.job_type,
+            step_name=f"Pensamento: {assistant_name}",
+            message=thought,
+            status="SUCCESS",
+            metadata=metadata or {}
+        )

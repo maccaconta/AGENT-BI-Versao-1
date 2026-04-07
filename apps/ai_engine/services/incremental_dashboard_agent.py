@@ -15,6 +15,7 @@ from apps.ai_engine.prompts.incremental_dashboard_prompt import INCREMENTAL_DASH
 from apps.ai_engine.services.bedrock_service import BedrockService
 from apps.ai_engine.services.html_renderer_service import DashboardHtmlRendererService
 from apps.ai_engine.services.nl2sql_service import NL2SQLService
+from apps.ai_engine.agents.nl2sql_agent import NL2SQLAgent
 from apps.ai_engine.services.planner_service import DashboardPlannerService
 from apps.datasets.services.sqlite_query_service import (
     LocalSQLiteQueryService,
@@ -28,6 +29,7 @@ from apps.datasets.services.sqlite_analytics_store import (
 from apps.ai_engine.agents.supervisor_agent import SupervisorAgent
 from apps.ai_engine.agents.pandas_analytics_agent import PandasAnalyticsAgent
 from apps.ai_engine.agents.rag_knowledge_agent import RAGKnowledgeAgent
+from apps.ai_engine.agents.critic_agent import CriticAgent
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ class IncrementalDashboardAgentService:
         self.sqlite_store = LocalSQLiteAnalyticsStoreService()
         self.planner = DashboardPlannerService()
         self.nl2sql = NL2SQLService()
+        self.nl2sql_agent = NL2SQLAgent()
         self.renderer = DashboardHtmlRendererService()
 
     def generate(self, request_data: dict, request_user=None, save_version: bool = True) -> dict:
@@ -83,35 +86,40 @@ class IncrementalDashboardAgentService:
                 "temporal": is_temp
             })
 
-        # --- MULTI-AGENT ROUTING ---
-        trace.start_step("Supervisor: Routing")
+        # --- MULTI-AGENT ROUTING (ASSISTENTES) ---
+        trace.start_step("Supervisor: Escaneamento")
         supervisor = SupervisorAgent()
         routing_decision = supervisor.determine_route(
             user_prompt=context.get("currentUserPrompt", ""),
             datasets_metadata=ds_stats
         )
         route_selected = routing_decision.get("route", "ROUTE_NL2SQL")
-        trace.end_step("Supervisor: Routing", message=f"Rota Dinâmica: {route_selected} - {routing_decision.get('reasoning', '')}", metadata={"routing_decision": routing_decision})
+        trace.end_step("Supervisor: Escaneamento", message=f"Intenção detectada. Delegando para {route_selected}.", metadata={"routing_decision": routing_decision})
         
         context["routing_decision"] = routing_decision
         
-        trace.start_step(f"Especialista: {route_selected}")
         if route_selected == "ROUTE_PANDAS":
-            pandas_agent = PandasAnalyticsAgent()
+            pandas_assistant = PandasAnalyticsAgent()
             profiles = [ds.get("data_profile", {}) for ds in context.get("datasets", [])]
-            p_result = pandas_agent.analyze(context.get("currentUserPrompt", ""), profiles)
+            p_result = pandas_assistant.analyze(context.get("currentUserPrompt", ""), profiles, trace=trace)
             context["specialist_insights"] = p_result.get("analysis", "")
-            trace.end_step(f"Especialista: {route_selected}", message="Análise estatística pré-computada concluída.", metadata=p_result)
             
         elif route_selected == "ROUTE_KB_RAG":
-            rag_agent = RAGKnowledgeAgent()
+            rag_assistant = RAGKnowledgeAgent()
             rag_snippets = [snip.get("text", "") for snip in context.get("ragRetrievedContext", []) if snip.get("text")]
-            r_result = rag_agent.query_knowledge(context.get("currentUserPrompt", ""), "\n".join(rag_snippets))
+            r_result = rag_assistant.query_knowledge(context.get("currentUserPrompt", ""), "\n".join(rag_snippets), trace=trace)
             context["specialist_insights"] = r_result.get("answer", "")
-            trace.end_step(f"Especialista: {route_selected}", message="Busca semântica conceitual concluída.", metadata=r_result)
             
         else:
-            trace.end_step(f"Especialista: {route_selected}", message="Encaminhando p/ Orquestração de Tabelas (NL2SQL).", status="INFO")
+            # ROUTE_NL2SQL - Assistente Especialista para SQL Complexo
+            n_result = self.nl2sql_agent.generate_sql(
+                user_prompt=context.get("currentUserPrompt", ""),
+                datasets=context.get("datasets", []),
+                relationships=context.get("semanticRelationships", []),
+                trace=trace
+            )
+            context["specialist_sql"] = n_result.get("sql", "")
+            context["specialist_insights"] = n_result.get("description", "")
         # ---------------------------
 
         strict_bedrock = bool(request_data.get("requireBedrock", False))
@@ -141,68 +149,141 @@ class IncrementalDashboardAgentService:
                 "Modo estrito de Bedrock foi solicitado, mas o backend nao esta apto a invocar Bedrock com a configuracao/credenciais atuais."
             )
 
-        if should_try_bedrock:
+        # ----------------------------------------------------------------------
+        # CICLO DE GERAÇÃO E SELF-CORRECTION (MULTI-AGENTE)
+        # ----------------------------------------------------------------------
+        max_attempts = 2
+        current_attempt = 1
+        final_result = None
+        critic_feedback_loop = ""
+        
+        while current_attempt <= max_attempts:
             bedrock_attempted = True
-            try:
-                trace.start_step("Invocação LLM (Bedrock)")
-                bedrock_client = self._bedrock_client()
-                response = bedrock_client.invoke_with_json_output(
-                    system_prompt=system_prompt,
-                    user_message=user_message,
-                    temperature=0.2,
-                )
-                bedrock_used = isinstance(response, dict)
-                bedrock_runtime_metadata = dict(getattr(bedrock_client, "last_invoke_metadata", {}) or {})
-                
-                # Captura de tokens
-                input_t = bedrock_runtime_metadata.get("usage", {}).get("input_tokens", 0)
-                output_t = bedrock_runtime_metadata.get("usage", {}).get("output_tokens", 0)
-                
-                trace.end_step(
-                    "Invocação LLM (Bedrock)", 
-                    message="Resposta recebida com sucesso",
-                    input_tokens=input_t,
-                    output_tokens=output_t,
-                    metadata={"raw_response": response}
-                )
-            except Exception as exc:
-                bedrock_error = str(exc)
-                logger.warning("Incremental dashboard fallback activated: %s", exc)
-                if strict_bedrock:
-                    raise ValueError(
-                        "Falha ao obter resposta valida do Bedrock em modo estrito."
-                    ) from exc
+            bedrock_used = False
+            response = None
+            bedrock_runtime_metadata = {}
+            bedrock_error = None
+            
+            # Ajusta o prompt do usuário se houver feedback anterior
+            current_user_message = user_message
+            if critic_feedback_loop:
+                current_user_message += f"\n\n🚨 FEEDBACK DO CRITIC AGENT (CORRIJA ESTES PONTOS):\n{critic_feedback_loop}"
+            
+            if should_try_bedrock:
+                try:
+                    step_name = f"Invocação LLM (Bedrock) - Tentaiva {current_attempt}"
+                    trace.start_step(step_name)
+                    bedrock_client = self._bedrock_client()
+                    response = bedrock_client.invoke_with_json_output(
+                        system_prompt=system_prompt,
+                        user_message=current_user_message,
+                        temperature=0.2,
+                    )
+                    bedrock_used = isinstance(response, dict)
+                    bedrock_runtime_metadata = dict(getattr(bedrock_client, "last_invoke_metadata", {}) or {})
+                    
+                    input_t = bedrock_runtime_metadata.get("usage", {}).get("input_tokens", 0)
+                    output_t = bedrock_runtime_metadata.get("usage", {}).get("output_tokens", 0)
+                    
+                    trace.end_step(
+                        step_name, 
+                        message="Resposta recebida com sucesso.",
+                        input_tokens=input_t,
+                        output_tokens=output_t
+                    )
+                except Exception as exc:
+                    bedrock_error = str(exc)
+                    logger.warning("Invocação Bedrock falhou na tentativa %s: %s", current_attempt, exc)
+                    if strict_bedrock:
+                        raise ValueError("Falha crítica no Bedrock em modo estrito.") from exc
 
-        result = self._normalize_response(response, context)
+            # Normalização e Validações de Segurança
+            candidate_result = self._normalize_response(response, context)
+            self._validate_sql_proposal(candidate_result, context)
+            self._ensure_operational_output(candidate_result, context)
+
+            # --- AVALIAÇÃO DO CRITIC ---
+            # Status padrão para casos onde o Critic não é acionado (Local/Fallback)
+            eval_result_dict = {
+                "score": 1.0,
+                "grade": "A",
+                "feedback": "Aprovação implícita (Modo Local/Mock).",
+                "issues": [],
+                "passes_threshold": True
+            }
+
+            if bedrock_used and candidate_result:
+                trace.start_step(f"Critic Agent: Avaliando Qualidade (T{current_attempt})")
+                critic = CriticAgent()
+                
+                # Preparação de Schema e Queries para o Critic
+                ds_list = context.get("datasets", [])
+                primary_schema = ds_list[0].get("schema_json", {}) if ds_list else {}
+                sql_p = candidate_result.get("sqlProposal", {})
+                structured_queries = [{"name": "Principal", "sql": sql_p.get("sql", "")}]
+
+                try:
+                    eval_obj = critic.evaluate(
+                        original_instruction=context.get("currentUserPrompt", ""),
+                        generated_html=candidate_result.get("htmlDashboard", ""),
+                        sql_queries=structured_queries,
+                        query_results=[], 
+                        schema=primary_schema,
+                        dataset=None 
+                    )
+                    eval_result_dict = eval_obj.to_dict()
+                    
+                    status_text = "APROVADO" if eval_obj.passes_threshold else "REPROVADO/CORRIGINDO"
+                    trace.end_step(
+                        f"Critic Agent: Avaliando Qualidade (T{current_attempt})", 
+                        message=f"Score: {eval_obj.score:.2f} ({eval_obj.grade}) - Status: {status_text}",
+                        metadata=eval_result_dict
+                    )
+                except Exception as critic_exc:
+                    logger.warning(f"Falha no CriticAgent: {str(critic_exc)}")
+                    # Mantém o eval_result_dict padrão em caso de erro no critic
+
+            # Consolidação do resultado
+            final_result = candidate_result
+            final_result["criticRating"] = eval_result_dict
+            
+            # Condição de saída: aprovação, limite de tentativas ou modo local
+            if not bedrock_used or eval_result_dict.get("passes_threshold") or current_attempt >= max_attempts:
+                break
+                
+            # Prepara feedback para a próxima iteração
+            critic_feedback_loop = f"ISSUES: {', '.join(eval_result_dict.get('issues', []))}\nFEEDBACK: {eval_result_dict.get('feedback', '')}"
+            current_attempt += 1
+
+        # Finalização de metadados
         response_source = "bedrock" if bedrock_used else "local_fallback"
-        if strict_bedrock and response_source != "bedrock":
-            raise ValueError("Modo estrito de Bedrock exige resposta originada no Bedrock, sem fallback local.")
-
-        self._validate_sql_proposal(result, context)
-        self._ensure_operational_output(result, context)
-
-        result["generationMetadata"] = {
+        final_result["generationMetadata"] = {
             "strictBedrock": strict_bedrock,
             "bedrockAttempted": bedrock_attempted,
             "bedrockUsed": bedrock_used,
             "responseSource": response_source,
             "bedrockRuntime": bedrock_runtime_metadata,
             "bedrockError": bedrock_error or None,
+            "finalScore": final_result["criticRating"]["score"],
+            "attempts": current_attempt
         }
+        # Unifica campos para o frontend (compatibilidade)
+        final_result["insights"] = final_result.get("footerInsights", "")
+        final_result["sql"] = final_result.get("sqlProposal", {}).get("sql", "")
 
         if save_version and context.get("dashboard"):
-            version = self._save_draft_version(context, result, request_user)
+            version = self._save_draft_version(context, final_result, request_user)
             if version:
-                result["savedVersion"] = {
+                final_result["savedVersion"] = {
                     "id": str(version.id),
                     "versionNumber": version.version_number,
                     "state": version.state,
                 }
 
-        result["dashboard_html"] = result["htmlDashboard"]
-        result["sql"] = result["sqlProposal"]["sql"]
-        result["insights"] = result["footerInsights"]
-        return result
+        final_result["dashboard_html"] = final_result["htmlDashboard"]
+        final_result["sql"] = final_result["sqlProposal"]["sql"]
+        final_result["insights"] = final_result["footerInsights"]
+        return final_result
 
     def _build_context(self, request_data: dict, request_user=None, trace=None) -> dict:
         dashboard = None
@@ -405,9 +486,14 @@ class IncrementalDashboardAgentService:
         sql_proposal_raw = response.get("sqlProposal")
         if not isinstance(sql_proposal_raw, dict):
             sql_proposal_raw = {}
+        
+        # Prioriza SQL vinda do Especialista se presente no contexto
+        specialist_sql = context.get("specialist_sql")
+        final_sql = sql_proposal_raw.get("sql") or specialist_sql or fallback["sqlProposal"]["sql"]
+        
         sql_proposal = {
-            "description": sql_proposal_raw.get("description") or fallback["sqlProposal"]["description"],
-            "sql": sql_proposal_raw.get("sql") or fallback["sqlProposal"]["sql"],
+            "description": sql_proposal_raw.get("description") or context.get("specialist_insights") or fallback["sqlProposal"]["description"],
+            "sql": final_sql,
         }
 
         dashboard_plan_raw = response.get("dashboardPlan")

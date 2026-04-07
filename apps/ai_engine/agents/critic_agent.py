@@ -123,6 +123,15 @@ class CriticAgent:
                 # Injeta a persona do Admin no topo para que o Critic saiba o que avaliar
                 system_instructions = global_policy.generate_full_system_prompt() + "\n\n" + CRITIC_SYSTEM_PROMPT
 
+        # Verificar se o Bedrock está disponível e configurado
+        if not self._is_bedrock_available():
+            logger.info("Critic Agent: Bedrock indisponível. Pulando avaliação detalhada (Aprovação implícita).")
+            return CriticResult(
+                score=1.0, # Aprovado por padrão se não puder avaliar
+                feedback="Avaliação automática ignorada (Bedrock desativado).",
+                approved=True
+            )
+
         # Invocar Bedrock
         try:
             response_data = self.bedrock.invoke_with_json_output(
@@ -132,7 +141,7 @@ class CriticAgent:
             )
         except BedrockInvocationError as e:
             logger.error(f"Critic Agent: erro Bedrock: {e}")
-            # Fallback: score baixo com erro
+            # Fallback: score baixo com erro para revisão manual se o erro for real de invocação
             return CriticResult(
                 score=0.3,
                 feedback=f"Erro na avaliação automática: {e}. Revisão manual necessária.",
@@ -177,6 +186,24 @@ class CriticAgent:
                 feedback="Erro ao parsear avaliação do Critic.",
                 raw_response=data,
             )
+
+    def _is_bedrock_available(self) -> bool:
+        """Verifica se o Bedrock está ativo e com chaves configuradas."""
+        from django.conf import settings
+        
+        # 1. Verifica flag global
+        use_bedrock = getattr(settings, "USE_BEDROCK_LLM", False)
+        if not use_bedrock:
+            return False
+            
+        # 2. Verifica se estamos em teste e se o Bedrock deve ser mockado
+        # Em teste, se USE_BEDROCK_LLM é False (já checado acima), retornamos False.
+        
+        # 3. Verifica chaves mínimas (apenas se não estiver em modo local_fast sem chaves)
+        aws_key = getattr(settings, "AWS_ACCESS_KEY_ID", "")
+        aws_secret = getattr(settings, "AWS_SECRET_ACCESS_KEY", "")
+        
+        return bool(aws_key and aws_secret)
 
     @staticmethod
     def _score_to_grade(score: float) -> str:

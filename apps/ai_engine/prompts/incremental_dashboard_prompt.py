@@ -19,7 +19,9 @@ Regras fundamentais:
 - sempre salvar como DRAFT.
 - o HTML final deve ser completo (documento HTML valido) e operacional.
 - o HTML final deve executar NL2SQL via fetch para `/api/v1/copilot/sql-preview`, enviando `sql` e `datasets` recebidos no contexto.
-- o dashboard deve explicar os dados com componentes visuais (cards, graficos e tabela) e trazer exatamente 6 insights objetivos.
+- PRIORIDADE MÁXIMA: Se houver `specialist_insights` e `specialist_sql` no contexto, você DEVE utilizá-los. Eles representam cálculos reais (Pandas) e SQL complexo já validados por sub-agentes especialistas.
+- O dashboard deve explicar os dados com componentes visuais (cards, graficos e tabela) e trazer exatamente 6 insights objetivos.
+- Os insights devem ser derivados DIRETAMENTE da análise do `specialist_insights` para garantir precisão matemática (Correlações, Anomalias, Tendências).
 
 Voce deve combinar:
 - templatePrompt

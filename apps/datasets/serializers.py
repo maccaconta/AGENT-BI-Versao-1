@@ -23,7 +23,7 @@ class DatasetSerializer(serializers.ModelSerializer):
             "processing_error", "processing_started_at", "processing_finished_at",
             "created_by_name", "is_ready", "created_at", "updated_at"
         ]
-        read_only_fields = ["status", "s3_parquet_path", "glue_table", "schema_json", "sample_json"]
+        read_only_fields = ["status", "s3_parquet_path", "glue_table", "sample_json"]
 
 
 class DatasetCreateSerializer(serializers.ModelSerializer):

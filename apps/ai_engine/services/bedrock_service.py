@@ -10,6 +10,7 @@ import uuid
 from typing import Optional
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 from django.conf import settings
 
@@ -31,11 +32,20 @@ class BedrockService:
     MODEL_ID = "anthropic.claude-3-5-sonnet-20241022-v2:0"
     MAX_RETRIES = 3
     RETRY_DELAY = 5  # segundos
+    READ_TIMEOUT = 60  # segundos para evitar hang infinito
 
     def __init__(self):
         region = getattr(settings, "BEDROCK_REGION", "") or getattr(settings, "AWS_REGION", "us-east-1")
         self.region = region
-        self.client = boto3.client("bedrock-runtime", region_name=region)
+        
+        # Configura timeout para evitar que o sistema fique "travado" esperando a LLM
+        config = Config(
+            read_timeout=self.READ_TIMEOUT,
+            connect_timeout=15,
+            retries={'max_attempts': self.MAX_RETRIES}
+        )
+        
+        self.client = boto3.client("bedrock-runtime", region_name=region, config=config)
         self.model_id = settings.BEDROCK_MODEL_ID or self.MODEL_ID
         self.max_tokens = settings.BEDROCK_MAX_TOKENS
         self._agent_runtime_client = None
