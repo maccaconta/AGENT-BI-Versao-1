@@ -8,50 +8,56 @@ O Agent-BI não utiliza prompts únicos. Cada instrução enviada ao Amazon Bedr
 - **Nível**: Plataforma (Imutável por projeto).
 - **Conteúdo**: Instruções de orquestração, padrões de design NTT DATA e regras de uso da biblioteca visual.
 
-### B. Persona Especialista (Domínio de Negócio)
-- **Nível**: Projeto (Customizável via Prompt Templates).
-- **Conteúdo**: Define o "tom de voz" e o conhecimento técnico específico (ex: Logística, Tesouraria, Risco).
-- **Injeção**: Recuperado via `project.specialist_prompt_id`.
+### B. Persona Especialista (Diretriz Mestre)
+- **Nível**: Projeto (Customizável via Prompt Templates no SQLite).
+- **Prioridade**: **MÁXIMA**. Injetado como instrução de sistema ou contexto prioritário.
+- **Conteúdo**: Define o "tom de voz" e o conhecimento técnico específico (ex: Fórmulas de Risco de Crédito, Logística, Tesouraria).
+- **Injeção**: Recuperado via `project.specialist_prompt_id` e injetado via orquestrador.
 
 ### C. Global Compliance (Cerca Elétrica)
 - **Nível**: Tenant/Corporativo.
 - **Conteúdo**: Regras mandatórias de segurança, privacidade (LGPD) e diretrizes visuais estritas.
-- **Função**: Atua como um filtro final sobre as ações da IA.
 
 ---
 
-## 2. Pipeline de Dados e Profiling
-Para evitar alucinações, a IA nunca trabalha "no escuro". O fluxo de ingestão garante o contexto:
+## 2. Pipeline de Dados e Profiling (Semântica IA)
+A IA realiza um enriquecimento semântico antes da análise, garantindo que colunas como "SLC_CLI" sejam interpretadas como "Saldo devedor do Cliente".
 
 1. **Ingestão**: O arquivo é processado e convertido para Parquet.
-2. **Auto-Profiling**: O sistema extrai metadados JSON contendo:
-    - Esquema técnico (DDL).
-    - Amostras de valores reais (Sample Data).
-    - Estatísticas básicas (Min, Max, Outliers).
-    - Perfis Temporais (se detectados).
-3. **Data Context**: Essas informações são injetadas no prompt para que o Agente NL2SQL saiba exatamente quais nomes de colunas e filtros deve usar.
+2. **Interpretador Semântico (DataInterpreterAgent)**:
+   - Utiliza a **Converse API (Amazon Nova)** para inferir o schema.
+   - Traduz nomes técnicos para nomes de negócio baseados no **Especialista de Domínio**.
+   - Gera o **Diagnóstico Executivo** (Resumo Estratégico do Dataset).
+3. **Auto-Profiling**: O sistema extrai metadados JSON (Min, Max, Outliers, Perfis Temporais).
 
 ---
 
 ## 3. Orquestração de Agentes (Cognitive Loop)
-O `IncrementalDashboardAgentService` gerencia sub-agentes especializados:
+O `IncrementalDashboardAgentService` gerencia a inteligência multiprocessada:
 
-### 1. Planner (O Arquiteto)
-Decide a estratégia de resposta. Analisa se a pergunta do usuário requer apenas SQL ou cálculos matemáticos complexos em Python.
+### 1. Supervisor / Planner
+Decide a estratégia: **ROUTE_NL2SQL** (Consultas) ou **ROUTE_PANDAS** (Estatística/Risco).
+- Em rota de Risco, o Supervisor injeta o contexto do Especialista para forçar a rota estatística.
 
 ### 2. NL2SQL (O Tradutor)
-Transforma a linguagem natural em query SQL (Athena/SQLite). 
-- **Impacto da Governança**: O Especialista define os sinônimos de colunas. O Compliance injeta filtros `WHERE` de segurança.
+Transforma linguagem natural em query SQL. Respeita os sinônimos de colunas inferidos pelo Interpretador Semântico.
 
-### 3. Pandas Executor (O Estatístico)
-Processa o resultado do SQL em um ambiente Python seguro.
-- **Função**: Realiza correlações, previsões e insights narrativos.
-- **Output**: Retorna "Dataframes" processados prontos para visualização.
+### 3. Pandas Executor (O Analista Quantitativo)
+O "Cérebro" estatístico da plataforma.
+- **Capacidade**: Processamento de até **50.000 linhas** por execução síncrona.
+- **Feature Engineering Obrigatório**: O agente é instruído a CRIAR novas colunas (ex: `score_credito`, `prob_default`, `rating_risco`) e não apenas resumir as existentes.
+- **Modelagem**: Realiza correlações, regressões e segmentações de risco.
 
 ### 4. HTML Renderer (O Designer)
-Transforma os dados processados em componentes visuais (React/Next.js) seguindo o Master Prompt de estilo.
+Transforma os dados enriquecidos em componentes React/Next.js seguindo o design system premium.
 
 ---
 
-## 4. Rastreabilidade e Auditoria (Traces)
-Cada dashboard gerado possui um rastro completo (Trace) contendo o prompt final concatenado. Isso permite exportar e auditar exatamente quais instruções (Master + Specialist + Compliance) guiaram a decisão da IA.
+## 4. Conectividade Amazon Bedrock
+- **Motor Principal**: Amazon Nova (via API Converse para suporte a mensagens complexas e JSON estruturado).
+- **Segurança**: Fallback para **Heurística de Emergência (Zero-Infra)** caso a conexão com a AWS falhe, garantindo que o sistema nunca pare.
+
+---
+
+## 5. Rastreabilidade e Auditoria (Traces)
+Cada dashboard gerado possui um rastro completo (Trace) contendo o prompt final concatenado. Isso permite exportar e auditar exatamente quais instruções guiaram a decisão da IA.

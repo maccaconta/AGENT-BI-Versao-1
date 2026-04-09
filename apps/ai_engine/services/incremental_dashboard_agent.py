@@ -136,8 +136,11 @@ class IncrementalDashboardAgentService:
         trace.start_step("Supervisor: Escaneamento")
         supervisor = SupervisorAgent()
         
-        # Injeta o Especialista como DIRETRIZ MESTRE no roteamento
-        supervisor_context = f"DIRETRIZ ESPECIALISTA: {specialist_prompt}\n\n" if specialist_prompt else ""
+        # Injeta o Especialista como MANDATO DE MISSÃO no roteamento
+        supervisor_context = f"MANDATO DE MISSÃO (PRIORIDADE TOTAL): Este é um projeto de {domain_name}. "
+        if specialist_prompt:
+            supervisor_context += f"Siga rigorosamente estas diretrizes: {specialist_prompt}\n\n"
+        
         routing_decision = supervisor.determine_route(
             user_prompt=supervisor_context + context.get("currentUserPrompt", ""),
             datasets_metadata=ds_stats
