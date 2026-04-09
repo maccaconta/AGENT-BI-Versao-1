@@ -13,10 +13,12 @@ logger = logging.getLogger(__name__)
 NL2SQL_AGENT_SYSTEM_PROMPT = """Você é o Analista Financeiro Sênior e Especialista em SQL (NL2SQL) da NTT DATA - Agent-BI.
 Sua missão é converter perguntas de usuários em consultas SQL estratégicas que forneçam uma visão analítica completa do negócio.
 
-Ao receber uma pergunta, você não deve ser apenas um executor técnico, mas um parceiro de negócios que busca:
-1. **Visão de Ranking**: Para pedidos de "maior", "melhor" ou "pior", retorne SEMPRE uma lista (ex: Top 10) e não apenas o primeiro registro. Isso permite ao usuário ver a distribuição.
+Ao receber uma pergunta, você deve seguir rigorosamente as **REGRAS DE NEGÓCIO ESPECIALIZADAS** (Fórmulas, Taxas, Score) fornecidas no contexto. Elas têm prioridade total sobre qualquer lógica genérica.
+
+Além disso, busque sempre:
+1. **Análise de Agregação Total**: Para KPIs e métricas de desempenho (Soma, Média, Contagem), NÃO utilize LIMIT se o dataset for pequeno (< 2000 linhas). Calcule sobre a base completa para evitar distorções estatísticas.
 2. **Visão de Evolução**: Se houver colunas de data/tempo, inclua-as na query para permitir análises de tendência e sazonalidade, mesmo que o usuário não peça explicitamente a data.
-3. **Visão de Contexto**: Traga dimensões descritivas (ex: Categoria, Região, Status) que ajudem a explicar o "porquê" por trás dos números.
+3. **Visão de Contexto e Detalhamento**: Traga dimensões descritivas que ajudem a explicar o "porquê". Se o usuário pedir um ranking/top, retorne no máximo 50 registros para visões analíticas.
 
 ## Regras Técnicas (SQLite):
 - Gere uma única instrução SQL (SELECT ou WITH) robusta.
@@ -29,8 +31,8 @@ Ao receber uma pergunta, você não deve ser apenas um executor técnico, mas um
 Retorne estritamente um JSON válido com os campos:
 {
   "sql": "A consulta SQL gerada",
-  "description": "Uma explicação concisa voltada para o negócio (ex: 'Listando os 10 clientes com maior risco para análise de exposição')",
-  "tables_used": ["lista", "de", "tabelas"],
+  "description": "Explicação concisa voltada para o negócio",
+  "tables_used": ["tabela1", "tabela2"],
   "complexity": "LOW" | "MEDIUM" | "HIGH"
 }
 """
@@ -38,19 +40,19 @@ Retorne estritamente um JSON válido com os campos:
 class NL2SQLAgent:
     """
     Assistente especializado em traduzir linguagem natural para SQL complexo 
-    usando o poder do LLM Bedrock, indo além das heurísticas básicas.
+    usando o poder do LLM Bedrock e o contexto especializado (RAG).
     """
     def __init__(self):
         self.bedrock_service = BedrockService()
 
-    def generate_sql(self, user_prompt: str, datasets: List[Dict[str, Any]], relationships: List[Dict[str, Any]] = None, trace=None) -> Dict[str, Any]:
+    def generate_sql(self, user_prompt: str, datasets: List[Dict[str, Any]], relationships: List[Dict[str, Any]] = None, specialist_context: str = "", trace=None) -> Dict[str, Any]:
         """
-        Gera a proposta SQL baseada no contexto tabular.
+        Gera a proposta SQL baseada no contexto tabular e nas métricas da Base de Conhecimento.
         """
-        logger.info("[Assistente_NL2SQL] Iniciando geração de SQL complexa.")
+        logger.info("[Assistente_NL2SQL] Iniciando geração de SQL com contexto especializado.")
         
         if trace:
-            trace.log_thought("Assistente NL2SQL", "Analisando o esquema das tabelas e os relacionamentos para construir a query ideal.")
+            trace.log_thought("Assistente NL2SQL", "Combinando esquema das tabelas com as fórmulas técnicas de risco recuperadas da KB.")
 
         # Constrói o contexto tabular detalhado
         schema_context = []
@@ -65,6 +67,9 @@ class NL2SQLAgent:
 
         prompt = f"""
 Pergunta do Usuário: "{user_prompt}"
+
+=== REGRAS DE NEGÓCIO ESPECIALIZADAS (PRIORIDADE TOTAL) ===
+{specialist_context if specialist_context else "Nenhuma regra de negócio externa informada. Use lógica contábil padrão."}
 
 === SCHEMA DAS TABELAS DISPONÍVEIS ===
 {json.dumps(schema_context, indent=2, ensure_ascii=False)}

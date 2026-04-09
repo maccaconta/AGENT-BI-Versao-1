@@ -93,6 +93,26 @@ class Project(TimeStampedModel):
         choices=ProjectStatus.choices,
         default=ProjectStatus.ACTIVE,
     )
+    analysis_max_rows = models.PositiveIntegerField(
+        default=5000,
+        verbose_name="Limite de Linhas para Análise IA",
+        help_text="Máximo de linhas processadas pelo Agente de Estatística (Pandas) para garantir performance."
+    )
+    ai_temperature = models.FloatField(
+        default=0.3,
+        verbose_name="Temperatura da IA",
+        help_text="Calibração do nível de criatividade da IA (0.0 a 1.0)."
+    )
+
+    specialist_prompt = models.ForeignKey(
+        "templates_lib.PromptTemplate",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="projects",
+        verbose_name="Especialista de Domínio",
+        help_text="Persona cognitiva selecionada para guiar as análises e o draft deste projeto."
+    )
 
     # AWS Resources
     s3_path = models.CharField(
@@ -149,12 +169,17 @@ class Project(TimeStampedModel):
         # Auto-gerar paths AWS baseados no tenant + project slug
         if not self.s3_path and self.tenant:
             project_slug = self.name.lower().replace(" ", "-")[:50]
-            self.s3_path = f"{self.tenant.s3_prefix}/{project_slug}"
+            s3_prefix = self.tenant.s3_prefix or "agent-bi-local"
+            self.s3_path = f"{s3_prefix}/{project_slug}"
+
         if not self.glue_database and self.tenant:
             project_slug = self.name.lower().replace(" ", "_")[:50]
-            self.glue_database = f"{self.tenant.glue_database_prefix}_{project_slug}"
+            glue_prefix = self.tenant.glue_database_prefix or "agent_bi_local"
+            self.glue_database = f"{glue_prefix}_{project_slug}"
+
         if not self.athena_workgroup and self.tenant:
-            self.athena_workgroup = self.tenant.athena_workgroup
+            self.athena_workgroup = self.tenant.athena_workgroup or "primary"
+
         super().save(*args, **kwargs)
 
     @property

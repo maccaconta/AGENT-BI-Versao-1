@@ -27,7 +27,7 @@ class PandasExecutorService:
         self.store = LocalSQLiteAnalyticsStoreService()
         self.db_path = self.store.db_path
 
-    def execute_analysis(self, code: str, datasets: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def execute_analysis(self, code: str, datasets: List[Dict[str, Any]], max_rows: int = 50000) -> Dict[str, Any]:
         """
         Executa um trecho de código Python sobre os datasets fornecidos.
         Cada dataset no SQLite será carregado como um DataFrame no dicionário 'dfs'.
@@ -44,9 +44,9 @@ class PandasExecutorService:
                 ds_name = ds.get("name", "dataset")
                 table_name = self.store.resolve_table_name(ds_id, ds_name)
                 
-                # Carrega o DF de forma eficiente
+                # Carrega o DF de forma eficiente com LIMIT
                 try:
-                    df = pd.read_sql_query(f'SELECT * FROM "{table_name}"', connection)
+                    df = pd.read_sql_query(f'SELECT * FROM "{table_name}" LIMIT {max_rows}', connection)
                     # Adiciona ao dicionário de execução com nome amigável e original
                     dfs[table_name] = df
                     safe_name = "".join(c if c.isalnum() else "_" for c in ds_name).lower()

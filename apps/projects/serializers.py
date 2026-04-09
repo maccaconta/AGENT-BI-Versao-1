@@ -40,6 +40,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             "domain_data_owner",
             "data_confidentiality",
             "crawler_frequency",
+            "analysis_max_rows",
             "intake_metadata",
             "status",
             "s3_path",
@@ -88,6 +89,8 @@ class ProjectIntakeCreateSerializer(serializers.Serializer):
     confidentiality = serializers.CharField(required=False, allow_blank=True, default="")
     crawlFrequency = serializers.CharField(required=False, allow_blank=True, default="")
     objective = serializers.CharField(required=False, allow_blank=True, default="")
+    specialist_prompt_id = serializers.UUIDField(required=False, allow_null=True)
+    analysis_max_rows = serializers.IntegerField(required=False, default=5000)
 
     def validate_dashboard(self, value: str) -> str:
         cleaned = value.strip()

@@ -5,6 +5,17 @@ Serializers para gestão de diretrizes e políticas de IA.
 """
 from rest_framework import serializers
 from apps.governance.models import GlobalSystemPrompt
+from apps.shared_models import PromptTemplate
+
+
+class PromptTemplateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PromptTemplate
+        fields = [
+            "id", "name", "description", "content", 
+            "category", "variables", "is_public", "version"
+        ]
+        read_only_fields = ["id"]
 
 
 class GlobalSystemPromptSerializer(serializers.ModelSerializer):
@@ -19,6 +30,7 @@ class GlobalSystemPromptSerializer(serializers.ModelSerializer):
             "enable_temporal_profile", "enable_correlation_profile",
             "enable_anomaly_detection", "enable_clustering_profile",
             "enable_forecasting_profile", "max_tokens_limit",
-            "is_active", "created_by_name", "created_at", "updated_at"
+            "ingestion_row_limit", "is_active", "created_by_name", 
+            "created_at", "updated_at"
         ]
         read_only_fields = ["id", "tenant", "created_at", "updated_at"]

@@ -147,7 +147,8 @@ def process_dataset_task(self, dataset_id: str, trace_id: str | None = None):
                 schema_json=schema_info,
             )
 
-        dataset.status = DatasetStatus.READY
+        # No modo local ou AWS, os dados técnicos já estão prontos, mas mantemos PROCESSING
+        # para a etapa de IA que vem a seguir.
         dataset.s3_parquet_path = parquet_path
         dataset.glue_table = table_name if use_aws_data else sqlite_table
         if not use_aws_data:
@@ -156,14 +157,83 @@ def process_dataset_task(self, dataset_id: str, trace_id: str | None = None):
         dataset.row_count = schema_info.get("row_count", 0)
         dataset.column_count = schema_info.get("column_count", 0)
         dataset.parquet_size_bytes = schema_info.get("parquet_size_bytes", 0)
-        dataset.processing_finished_at = timezone.now()
-        dataset.processing_error = ""
         dataset.save(update_fields=[
-            "status", "s3_parquet_path", "glue_table", "glue_database",
+            "s3_parquet_path", "glue_table", "glue_database",
             "schema_json", "row_count", "column_count", "parquet_size_bytes",
-            "processing_finished_at", "processing_error", "updated_at",
+            "updated_at",
         ])
         trace.end_step("Persistência do Dataset")
+
+        # --- NOVA ETAPA: INFERÊNCIA SEMÂNTICA E ESTRATÉGICA (LLM) ---
+        print(f"\n\n[AI_ENGINE] 🧠 Iniciando interpretação semântica para: {dataset.name}...")
+        trace.start_step("Enriquecimento com IA (Bedrock)")
+        try:
+            from apps.ai_engine.agents.data_interpreter_agent import DataInterpreterAgent
+            interpreter = DataInterpreterAgent()
+            
+            # Analisa o schema atual e a amostra (top 10)
+            columns = dataset.schema_json.get("columns", [])
+            sample = dataset.sample_json[:10]
+            
+            # Busca domínio do projeto para carregar especialista
+            domain_name = dataset.project.domain.name if dataset.project.domain else ""
+            
+            ai_analysis = interpreter.interpret_schema(columns, sample, domain_name=domain_name)
+            
+            # 1. Atualiza Descrição do Dataset (Resumo Executivo)
+            if ai_analysis.get("dataset_summary") and not dataset.description:
+                dataset.description = ai_analysis["dataset_summary"]
+            
+            # 2. Atualiza Insights Estratégicos e Diagnóstico de Fato no Perfil
+            if not dataset.data_profile_json:
+                dataset.data_profile_json = {}
+                
+            if ai_analysis.get("strategic_insights"):
+                dataset.data_profile_json["ai_strategic_insights"] = ai_analysis["strategic_insights"]
+            
+            # Diagnóstico de Tabela Fato (Governance)
+            if "is_fact_table" in ai_analysis:
+                dataset.data_profile_json["is_fact_table"] = ai_analysis["is_fact_table"]
+                dataset.data_profile_json["is_fact_table_reasoning"] = ai_analysis.get("is_fact_table_reasoning", "")
+
+            # 3. Atualiza Metadados das Colunas (is_key, description, etc.)
+            col_mapping = ai_analysis.get("column_mapping", {})
+            # Normalização para comparação case-insensitive
+            normalized_mapping = {str(k).lower().strip(): v for k, v in col_mapping.items()}
+            
+            for col in columns:
+                col_name = str(col.get("name", "")).lower().strip()
+                if col_name in normalized_mapping:
+                    mapping = normalized_mapping[col_name]
+                    # Só preenche se não houver flag manual já setada
+                    col["description"] = mapping.get("business_description") or col.get("description")
+                    role = mapping.get("role")
+                    if role == "PRIMARY_KEY": col["is_key"] = True
+                    elif role == "TIME": col["is_historical_date"] = True
+                    elif role == "DIMENSION": col["is_category"] = True
+                    elif role == "MEASURE": col["is_value"] = True
+                    
+                    # Hint de formato de data
+                    if mapping.get("date_format_hint"):
+                        col["date_format_hint"] = mapping["date_format_hint"]
+
+            dataset.schema_json["columns"] = columns
+            dataset.save(update_fields=["description", "data_profile_json", "schema_json", "updated_at"])
+            print(f"[AI_ENGINE] ✅ Interpretação concluída com sucesso para {dataset.name}.\n")
+            trace.end_step("Enriquecimento com IA (Bedrock)", message="Resumo e metadados gerados com sucesso.")
+            
+        except Exception as ai_exc:
+            print(f"[AI_ENGINE] ⚠️ Falha no enriquecimento IA: {ai_exc}")
+            logger.warning("[DatasetTask] Falha no enriquecimento IA: %s", ai_exc)
+            trace.end_step("Enriquecimento com IA (Bedrock)", status="WARNING", message=f"Pulado: {str(ai_exc)}")
+
+        # Finalização definitiva do Dataset
+        dataset.status = DatasetStatus.READY
+        dataset.processing_finished_at = timezone.now()
+        dataset.processing_error = ""
+        dataset.save(update_fields=["status", "processing_finished_at", "processing_error", "updated_at"])
+
+        print(f"[DatasetTask] 🚀 Dataset '{dataset.name}' totalmente pronto para análise!\n")
 
         logger.info(
             "[DatasetTask] Concluido: %s. Linhas=%s Colunas=%s Modo=%s",

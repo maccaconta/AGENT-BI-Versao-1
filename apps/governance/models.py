@@ -82,6 +82,12 @@ class GlobalSystemPrompt(TimeStampedModel):
         verbose_name="Limite de Tokens Master",
         help_text="Cota máxima de tokens para respostas da IA (Claude 3.5 Sonnet)."
     )
+
+    ingestion_row_limit = models.IntegerField(
+        default=5000,
+        verbose_name="Limite de Linhas para Ingestão",
+        help_text="Número máximo de linhas processadas pelo Agent-BI durante a ingestão (Governança)."
+    )
     
     language = models.CharField(
         max_length=10, 

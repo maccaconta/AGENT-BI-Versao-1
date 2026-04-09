@@ -30,6 +30,8 @@ from apps.ai_engine.agents.supervisor_agent import SupervisorAgent
 from apps.ai_engine.agents.pandas_analytics_agent import PandasAnalyticsAgent
 from apps.ai_engine.agents.rag_knowledge_agent import RAGKnowledgeAgent
 from apps.ai_engine.agents.critic_agent import CriticAgent
+from apps.ai_engine.agents.data_interpreter_agent import DataInterpreterAgent
+from apps.shared_models import PromptTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -87,10 +89,57 @@ class IncrementalDashboardAgentService:
             })
 
         # --- MULTI-AGENT ROUTING (ASSISTENTES) ---
+        # --- DATA INTERPRETATION (SEMANTIC ANALYTICS) ---
+        trace.start_step("Data Interpreter: Análise Semântica")
+        interpreter = DataInterpreterAgent()
+        # Usa o perfilamento de dados já existente para inferir semântica
+        semantic_mapping = {}
+        domain_name = context.get("dataDomain", "")
+        for ds in context.get("datasets", []):
+            table_mapping = interpreter.interpret_schema(
+                columns=ds.get("schema_json", {}).get("columns", []),
+                sample_data=ds.get("data_profile", {}).get("top_rows", []),
+                domain_name=domain_name
+            )
+            semantic_mapping[ds.get("sqlite_table")] = table_mapping.get("column_mapping", {})
+        
+        context["semantic_mapping"] = semantic_mapping
+        trace.end_step("Data Interpreter: Análise Semântica", message=f"Mapeamento semântico gerado para {len(semantic_mapping)} tabelas.")
+
+        # --- SPECIALIST & COMPLIANCE PROMPTS ---
+        trace.start_step("Prompt Library: Carregando Especialistas")
+        from apps.shared_models import PromptTemplate
+        specialist_prompt_obj = PromptTemplate.objects.filter(
+            name__icontains=domain_name,
+            category="SPECIALIST"
+        ).first() if domain_name else None
+        
+        specialist_prompt = specialist_prompt_obj.content if specialist_prompt_obj else ""
+        compliance_prompt = PromptTemplate.objects.filter(category="COMPLIANCE").first()
+        
+        trace.end_step("Prompt Library: Carregando Especialistas", message=f"Persona '{domain_name}' e Compliance carregados.")
+
+        # --- MULTI-AGENT ROUTING (DIRETRIZES DA KB / RAG) ---
+        # Sempre consulta as regras de negócio da Base de Conhecimento se snippets estiverem presentes,
+        # para que o SQL e o Pandas respeitem as fórmulas especialistas (ex: Risco, Tesouraria)
+        rag_snippets = [snip.get("text", "") for snip in context.get("ragRetrievedContext", []) if snip.get("text")]
+        if rag_snippets:
+            trace.start_step("Knowledge Specialist: Interpretando Base de Risco/Domínio")
+            rag_assistant = RAGKnowledgeAgent()
+            # Extrai diretrizes e fórmulas consolidadas
+            r_result = rag_assistant.query_knowledge(context.get("currentUserPrompt", ""), "\n".join(rag_snippets), trace=trace)
+            context["specialist_insights"] = r_result.get("business_rules", "") or r_result.get("answer", "")
+            context["rag_guidelines"] = r_result.get("guidelines", "")
+            trace.end_step("Knowledge Specialist: Interpretando Base de Risco/Domínio", message="Regras de negócio e fórmulas recuperadas da KB.", metadata=r_result)
+
+        # --- MULTI-AGENT ROUTING (SUPERVISOR) ---
         trace.start_step("Supervisor: Escaneamento")
         supervisor = SupervisorAgent()
+        
+        # Injeta o Especialista como DIRETRIZ MESTRE no roteamento
+        supervisor_context = f"DIRETRIZ ESPECIALISTA: {specialist_prompt}\n\n" if specialist_prompt else ""
         routing_decision = supervisor.determine_route(
-            user_prompt=context.get("currentUserPrompt", ""),
+            user_prompt=supervisor_context + context.get("currentUserPrompt", ""),
             datasets_metadata=ds_stats
         )
         route_selected = routing_decision.get("route", "ROUTE_NL2SQL")
@@ -101,25 +150,34 @@ class IncrementalDashboardAgentService:
         if route_selected == "ROUTE_PANDAS":
             pandas_assistant = PandasAnalyticsAgent()
             profiles = [ds.get("data_profile", {}) for ds in context.get("datasets", [])]
-            p_result = pandas_assistant.analyze(context.get("currentUserPrompt", ""), profiles, trace=trace)
-            context["specialist_insights"] = p_result.get("analysis", "")
+            max_rows = context.get("analysis_max_rows", 5000)
+            # Passa os insights do RAG para o Pandas respeitar as fórmulas
+            p_result = pandas_assistant.analyze(
+                user_prompt=context.get("currentUserPrompt", ""), 
+                datasets_profiles=profiles, 
+                max_rows=max_rows, 
+                specialist_context=context.get("specialist_insights", ""),
+                trace=trace
+            )
+            context["specialist_insights"] = (context.get("specialist_insights", "") + "\n\n" + p_result.get("analysis", "")).strip()
             
-        elif route_selected == "ROUTE_KB_RAG":
+        elif route_selected == "ROUTE_KB_RAG" and not context.get("specialist_insights"):
+            # Caso a rota seja KB_RAG e já não tenhamos consultado acima (redundância de segurança)
             rag_assistant = RAGKnowledgeAgent()
-            rag_snippets = [snip.get("text", "") for snip in context.get("ragRetrievedContext", []) if snip.get("text")]
             r_result = rag_assistant.query_knowledge(context.get("currentUserPrompt", ""), "\n".join(rag_snippets), trace=trace)
             context["specialist_insights"] = r_result.get("answer", "")
             
         else:
-            # ROUTE_NL2SQL - Assistente Especialista para SQL Complexo
+            # ROUTE_NL2SQL - Assistente Especialista com reforço de fórmulas do RAG
             n_result = self.nl2sql_agent.generate_sql(
                 user_prompt=context.get("currentUserPrompt", ""),
                 datasets=context.get("datasets", []),
                 relationships=context.get("semanticRelationships", []),
+                specialist_context=context.get("specialist_insights", ""), # Injeção de fórmulas de Risco
                 trace=trace
             )
             context["specialist_sql"] = n_result.get("sql", "")
-            context["specialist_insights"] = n_result.get("description", "")
+            context["specialist_insights"] = (context.get("specialist_insights", "") + "\n\n" + n_result.get("description", "")).strip()
         # ---------------------------
 
         strict_bedrock = bool(request_data.get("requireBedrock", False))
@@ -129,7 +187,7 @@ class IncrementalDashboardAgentService:
         bedrock_error = ""
         bedrock_runtime_metadata = {}
         
-        system_prompt = INCREMENTAL_DASHBOARD_SYSTEM_PROMPT
+        system_prompt = self._build_super_system_prompt(context)
         user_message = self._build_user_message(context)
         
         msg = f"Contexto analítico preparado. Perfis Pandas/Estatísticos carregados para {len(ds_stats)} datasets."
@@ -172,12 +230,15 @@ class IncrementalDashboardAgentService:
             if should_try_bedrock:
                 try:
                     step_name = f"Invocação LLM (Bedrock) - Tentaiva {current_attempt}"
-                    trace.start_step(step_name)
+                    # Monta o histórico de mensagens incluindo o novo prompt do usuário
+                    messages = list(context.get("chat_history", []))
+                    messages.append({"role": "user", "content": current_user_message})
+
                     bedrock_client = self._bedrock_client()
                     response = bedrock_client.invoke_with_json_output(
                         system_prompt=system_prompt,
-                        user_message=current_user_message,
-                        temperature=0.2,
+                        messages=messages,
+                        temperature=context.get("ai_temperature", 0.3),
                     )
                     bedrock_used = isinstance(response, dict)
                     bedrock_runtime_metadata = dict(getattr(bedrock_client, "last_invoke_metadata", {}) or {})
@@ -265,7 +326,8 @@ class IncrementalDashboardAgentService:
             "bedrockRuntime": bedrock_runtime_metadata,
             "bedrockError": bedrock_error or None,
             "finalScore": final_result["criticRating"]["score"],
-            "attempts": current_attempt
+            "attempts": current_attempt,
+            "full_prompt": f"--- SYSTEM PROMPT ---\n{system_prompt}\n\n--- USER MESSAGE ---\n{current_user_message}"
         }
         # Unifica campos para o frontend (compatibilidade)
         final_result["insights"] = final_result.get("footerInsights", "")
@@ -321,10 +383,39 @@ class IncrementalDashboardAgentService:
 
         if project and not master_prompt:
             from apps.governance.models import GlobalSystemPrompt
-
             policy = GlobalSystemPrompt.objects.filter(tenant=project.tenant, is_active=True).first()
             if policy:
                 master_prompt = policy.generate_full_system_prompt()
+
+        # --- BUSCA DE ESPECIALISTA POR DOMÍNIO ---
+        specialist_prompt_content = ""
+        compliance_prompt_content = ""
+        
+        if project:
+            # 1. Prioridade Máxima: Especialista vinculado formalmente ao projeto
+            if project.specialist_prompt:
+                specialist_prompt_content = project.specialist_prompt.content
+                logger.info(f"[Agent] Usando especialista formal do projeto: {project.specialist_prompt.name}")
+            else:
+                # Fallback: Tenta encontrar um PromptTemplate que coincida com o domínio do projeto
+                domain_name = request_data.get("dataDomain") or (project.domain.name if project.domain else "")
+                
+                if domain_name:
+                    from apps.shared_models import PromptTemplate
+                    specialist_template = PromptTemplate.objects.filter(
+                        name__icontains=domain_name,
+                        category="SPECIALIST"
+                    ).first()
+                    
+                    if specialist_template:
+                        specialist_prompt_content = specialist_template.content
+                        logger.info(f"[Agent] Especialista detectado via domínio '{domain_name}': {specialist_template.name}")
+            
+            # 2. Busca regras de compliance globais do tenant
+            from apps.governance.models import GlobalSystemPrompt
+            policy = GlobalSystemPrompt.objects.filter(tenant=project.tenant, is_active=True).first()
+            if policy:
+                compliance_prompt_content = policy.compliance_rules
 
         datasets = request_data.get("datasets") or self._serialize_project_datasets(project)
         datasets = self._enrich_datasets_for_sqlite(datasets)
@@ -347,13 +438,38 @@ class IncrementalDashboardAgentService:
                 metadata={"rag_snippets": rag_context}
             )
 
+        # --- RECUPERAÇÃO DE MEMÓRIA ANALÍTICA E HISTÓRICO ---
+        analytical_memory = {}
+        chat_history = []
+        if dashboard:
+            # Busca todas as versões para montar o histórico de conversas
+            versions = dashboard.versions.filter(is_deleted=False).order_by("version_number")
+            for v in versions:
+                # Cada versão anterior é um turno de conversa
+                v_instr = (v.instruction_snapshot or {}).get("content") or v.full_prompt
+                if v_instr:
+                    chat_history.append({"role": "user", "content": v_instr})
+                
+                # O "pensamento" da IA na versão anterior (incluindo o HTML e a lógica)
+                v_memory = (v.instruction_snapshot or {}).get("analytical_memory", {})
+                v_methodology = self._extract_methodology_from_html(self._get_existing_html(v))
+                
+                assistant_brain = f"METODOLOGIA APLICADA:\n{v_methodology}\n\nMEMÓRIA ANALÍTICA:\n{json.dumps(v_memory, ensure_ascii=False)}"
+                chat_history.append({"role": "assistant", "content": assistant_brain})
+            
+            # Pega a memória analítica da versão mais recente como ponto de partida
+            if dashboard.current_version:
+                analytical_memory = (dashboard.current_version.instruction_snapshot or {}).get("analytical_memory", {})
+
         return {
             "dashboard": dashboard,
             "project": project,
             "dashboardName": request_data.get("dashboardName") or (dashboard.name if dashboard else ""),
             "reportTitle": request_data.get("reportTitle") or request_data.get("dashboardName") or (dashboard.name if dashboard else ""),
             "reportDescription": request_data.get("reportDescription") or (dashboard.description if dashboard else ""),
-            "dataDomain": request_data.get("dataDomain") or getattr(getattr(project, "domain", None), "name", ""),
+            "dataDomain": request_data.get("dataDomain") or (project.domain.name if project and project.domain else ""),
+            "specialist_prompt_content": specialist_prompt_content,
+            "compliance_prompt_content": compliance_prompt_content,
             "domainDataOwner": request_data.get("domainDataOwner") or self._get_domain_owner_name(project),
             "dataConfidentiality": request_data.get("dataConfidentiality") or "",
             "crawlerFrequency": request_data.get("crawlerFrequency", "") or "",
@@ -369,11 +485,30 @@ class IncrementalDashboardAgentService:
             "semanticRelationships": request_data.get("semanticRelationships") or [],
             "knowledgeBasePromptHints": kb_hints,
             "ragRetrievedContext": rag_context,
-            "existingDashboardHtml": existing_html,
+            "analysis_max_rows": request_data.get("analysis_max_rows") or (project.analysis_max_rows if project else 5000),
+            "ai_temperature": request_data.get("ai_temperature") or (project.ai_temperature if project else 0.3),
             "frontendComponentContract": request_data.get("frontendComponentContract") or {},
             "visualLayoutRules": request_data.get("visualLayoutRules") or {},
             "outputFormatRules": request_data.get("outputFormatRules") or {},
+            "previousBusinessLogic": self._extract_methodology_from_html(existing_html),
+            "analytical_memory": analytical_memory,
+            "chat_history": chat_history,
         }
+
+    def _extract_methodology_from_html(self, html: str) -> str:
+        """
+        Tenta extrair a seção de metodologia do HTML existente para manter a memória analítica.
+        """
+        if not html:
+            return ""
+        import re
+        # Procura por section id="ai-methodology" ou similar
+        match = re.search(r'<section[^>]+id=["\']ai-methodology["\'][^>]*>(.*?)</section>', html, re.DOTALL | re.IGNORECASE)
+        if match:
+            # Remove tags HTML básicas para facilitar a leitura da LLM
+            content = re.sub(r'<[^>]+>', '\n', match.group(1)).strip()
+            return content
+        return ""
 
     def _build_user_message(self, context: dict) -> str:
         # 1. Extrair e destacar diretrizes da Knowledge Base como bloco mandatorio
@@ -411,18 +546,52 @@ class IncrementalDashboardAgentService:
 
         specialist_text = ""
         if context.get("specialist_insights"):
-            specialist_text = "\n===== INSIGHTS DO ESPECIALISTA (GERADOS PELO PANDAS/RAG - UTILIZE COPIANDO ISTO ESTRITAMENTE PARA OS FOOTER INSIGHTS OU DESCRIÇÃO) =====\n"
-            specialist_text += context["specialist_insights"] + "\n========================================================================================================================\n"
+            specialist_text = "\n===== DIRETRIZES TÉCNICAS E FÓRMULAS (RAG/KB) - PRIORIDADE MÁXIMA =====\n"
+            specialist_text += context["specialist_insights"] + "\n========================================================================\n"
+
+            memory_text = "\n===== MEMÓRIA ANALÍTICA E DE CÁLCULO (ITERAÇÕES ANTERIORES) =====\n"
+            memory_text += "Atenção: Os cálculos e premissas abaixo foram validados e devem ser mantidos ou evoluídos:\n"
+            if context.get("analytical_memory"):
+                memory_text += f"DADOS ESTRUTURADOS: {json.dumps(context['analytical_memory'], ensure_ascii=False)}\n"
+            memory_text += f"METODOLOGIA NARRATIVA: {context['previousBusinessLogic']}\n"
+            memory_text += "========================================================================\n"
 
         return (
-            "Evolua incrementalmente o dashboard abaixo.\n"
-            "Analise primeiro a aplicacao existente e retorne apenas JSON valido no contrato obrigatorio.\n"
+            "Evolue incrementalmente o dashboard analisando os dados semânticos e contextuais abaixo.\n"
+            "MANTENHA O FOCO ANALÍTICO NA INTENÇÃO DO USUÁRIO (PRIORIDADE MÁXIMA).\n"
+            f"DIRETRIZ DO USUÁRIO: \"{context.get('currentUserPrompt')}\"\n\n"
             f"{rag_block}\n"
             f"{hints_block}\n"
             f"{specialist_text}\n"
-            "===== CONTEXTO ANALITICO (dados, schema, prompts do usuario) =====\n"
+            f"{memory_text}\n"
+            "===== CONTEXTO DE NEGÓCIO E MAPEAMENTO SEMÂNTICO =====\n"
             f"{json.dumps(payload, ensure_ascii=False, default=str, indent=2)}"
         )
+
+    def _build_super_system_prompt(self, context: dict) -> str:
+        """
+        Constrói o prompt de sistema composto (Super Prompt) seguindo a hierarquia aprovada.
+        """
+        base_prompt = INCREMENTAL_DASHBOARD_SYSTEM_PROMPT
+        specialist = context.get("specialist_prompt_content", "")
+        compliance = context.get("compliance_prompt_content", "")
+        
+        # Injeta as personas e regras de compliance no início do sistema
+        super_prompt = f"""{base_prompt}
+
+## PERSONA ESPECIALISTA (CONHECIMENTO DE DOMÍNIO)
+{specialist}
+
+## DIRETRIZES DE COMPLIANCE E GOVERNANÇA
+{compliance}
+
+## REGRAS DE INTERPRETAÇÃO SEMÂNTICA (DATA INTERPRETER)
+Você recebeu um mapeamento semântico (`semantic_mapping`) no contexto do usuário.
+- Colunas marcadas como "PRIMARY_KEY" NUNCA devem ser agrupadas em eixos X ou categorias de gráficos. Use-as apenas para filtragem individual ou contagem distinta.
+- Colunas "MEASURE" são as métricas principais para os eixos Y.
+- Colunas "DIMENSION" são as categorias ideais para agrupamento.
+"""
+        return super_prompt
 
 
     def _normalize_response(self, response: Optional[dict], context: dict) -> dict:
@@ -533,6 +702,10 @@ class IncrementalDashboardAgentService:
         if not isinstance(limitations, list):
             limitations = fallback["limitations"]
 
+        follow_up_suggestions = response.get("followUpSuggestions")
+        if not isinstance(follow_up_suggestions, list):
+            follow_up_suggestions = []
+
         result = {
             "applicationAnalysis": application_analysis,
             "architecturePlan": architecture_plan,
@@ -541,6 +714,7 @@ class IncrementalDashboardAgentService:
             "dashboardPlan": dashboard_plan,
             "htmlDashboard": response.get("htmlDashboard") or fallback["htmlDashboard"],
             "footerInsights": footer_insights,
+            "followUpSuggestions": follow_up_suggestions,
             "versionAction": version_action,
             "limitations": limitations,
             # Legacy compatibility fields consumed by older callers.
@@ -832,6 +1006,7 @@ class IncrementalDashboardAgentService:
                 "content": context.get("currentUserPrompt", ""),
                 "previousUserPrompts": context.get("previousUserPrompts", []),
                 "sessionAuthor": context.get("sessionAuthor", ""),
+                "analytical_memory": result.get("analyticalMemory", {}), # Persistência do cérebro analítico
             },
             template_snapshot={
                 "templatePrompt": context.get("templatePrompt", ""),

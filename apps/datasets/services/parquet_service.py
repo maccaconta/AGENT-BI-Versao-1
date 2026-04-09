@@ -129,16 +129,18 @@ class ParquetService:
     def _optimize_dtypes(self, df: pd.DataFrame) -> pd.DataFrame:
         """Otimiza tipos de dados para reduzir tamanho."""
         for col in df.columns:
-            # Tenta converter para numérico
             if df[col].dtype == object:
-                # Tenta datetime
+                # 1. Tenta datetime robusto
                 try:
-                    df[col] = pd.to_datetime(df[col], infer_datetime_format=True)
-                    continue
+                    # Salva uma cópia para comparar se a conversão foi útil
+                    converted_dt = self._robust_to_datetime(df[col])
+                    if not converted_dt.equals(df[col]) and "datetime" in str(converted_dt.dtype):
+                        df[col] = converted_dt
+                        continue
                 except (ValueError, TypeError):
                     pass
 
-                # Tenta numérico
+                # 2. Tenta numérico
                 try:
                     df[col] = pd.to_numeric(df[col])
                     continue
@@ -146,6 +148,32 @@ class ParquetService:
                     pass
 
         return df
+
+    def _robust_to_datetime(self, series: pd.Series) -> pd.Series:
+        """Tenta converter para datetime usando múltiplos formatos comuns."""
+        if series.dtype != object:
+            return series
+
+        # 1. Tenta padrão do pandas com dayfirst=True (comum no Brasil)
+        try:
+            converted = pd.to_datetime(series, dayfirst=True, errors="coerce")
+            if converted.notna().sum() > 0:
+                return converted
+        except Exception:
+            pass
+
+        # 2. Tenta formatos específicos se falhar ou retornar NaT
+        formats = ["%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%Y-%m-%d", "%d.%m.%Y"]
+        for fmt in formats:
+            try:
+                converted = pd.to_datetime(series, format=fmt, errors="coerce")
+                # Se converter uma parte significativa (>10% e maior que zero), aceita
+                if converted.notna().sum() > 0:
+                    return converted
+            except Exception:
+                continue
+
+        return series
 
     @staticmethod
     def _sanitize_column_name(name: str) -> str:

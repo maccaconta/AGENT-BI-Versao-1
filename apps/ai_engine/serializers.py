@@ -43,6 +43,7 @@ class CopilotGenerateSerializer(serializers.Serializer):
     requireBedrock = serializers.BooleanField(required=False, default=False)
 
     query = serializers.CharField(required=False, allow_blank=True, default="")
+    ai_temperature = serializers.FloatField(required=False, default=0.3)
     trace_id = serializers.UUIDField(required=False, allow_null=True)
 
 

@@ -92,16 +92,8 @@ ASGI_APPLICATION = "config.asgi.application"
 # ─── Database ─────────────────────────────────────────────────────────────────
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": config("DB_NAME", default="agent_bi_db"),
-        "USER": config("DB_USER", default="agent_bi_user"),
-        "PASSWORD": config("DB_PASSWORD", default="agent_bi_pass"),
-        "HOST": config("DB_HOST", default="localhost"),
-        "PORT": config("DB_PORT", default="5432"),
-        "CONN_MAX_AGE": 60,
-        "OPTIONS": {
-            "connect_timeout": 10,
-        },
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / config("DATABASE_NAME", default="db.sqlite3"),
     }
 }
 
@@ -274,20 +266,34 @@ CLOUDFRONT_DOMAIN = config("CLOUDFRONT_DOMAIN", default="")
 CLOUDFRONT_DISTRIBUTION_ID = config("CLOUDFRONT_DISTRIBUTION_ID", default="")
 
 # ─── Redis / Celery ───────────────────────────────────────────────────────────
-REDIS_URL = config("REDIS_URL", default="redis://localhost:6379/0")
+REDIS_URL = config("REDIS_URL", default="")
 
-CACHES = {
-    "default": {
-        "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": REDIS_URL,
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient",
-        },
+if REDIS_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": REDIS_URL,
+            "OPTIONS": {
+                "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            },
+        }
     }
-}
+    CELERY_BROKER_URL = REDIS_URL
+    CELERY_RESULT_BACKEND = REDIS_URL
+    CELERY_TASK_ALWAYS_EAGER = False
+else:
+    # Fallback para ambiente sem Redis (Zero-Infra)
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "unique-snowflake",
+        }
+    }
+    CELERY_BROKER_URL = "memory://"
+    CELERY_RESULT_BACKEND = "cache+memory://"
+    CELERY_TASK_ALWAYS_EAGER = True  # Executa tasks sincronamente para não travar
+    print("⚠️  AVISO: Redis não detectado. Iniciando em modo Zero-Infra (Cache em Memória e Tasks Síncronas).")
 
-CELERY_BROKER_URL = REDIS_URL
-CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_ACCEPT_CONTENT = ["json"]

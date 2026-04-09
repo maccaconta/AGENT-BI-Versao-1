@@ -1,8 +1,4 @@
-"""
-apps.ai_engine.prompts.critic_prompt
-──────────────────────────────────────
-Prompts do Critic Agent para avaliação de qualidade dos dashboards.
-"""
+import json
 
 CRITIC_SYSTEM_PROMPT = """Você é um especialista em qualidade de dashboards analíticos, chamado Agent-BI Critic.
 
@@ -30,10 +26,16 @@ Sua tarefa é avaliar rigorosamente um dashboard gerado por IA e retornar:
 - O design é profissional e claro?
 - Os dados estão corretamente representados?
 
-### 4. Qualidade dos Insights (20%)
+### 4. Qualidade dos Insights e Adesão à Persona (20%)
 - Os insights são específicos e baseados em dados reais?
+- O dashboard adere ao tom de voz e prioridades da PERSONA ESPECIALISTA (se fornecida)?
 - Há análise narrativa relevante?
 - Os números estão formatados corretamente?
+
+### 5. Respeito ao Mapeamento Semântico (NOVO - CRÍTICO)
+- Colunas marcadas como "is_key" ou "PRIMARY_KEY" foram usadas indevidamente para agrupamento (GROUP BY)? SE SIM, O SCORE DEVE SER BAIXO.
+- Colunas de "DATA" foram usadas corretamente para eixos temporais?
+- Colunas de "VALOR" foram usadas para cálculos matemáticos?
 
 ## Escala de Score
 - 0.9–1.0: Excelente — pronto para publicação
@@ -99,8 +101,8 @@ def build_critic_prompt(
 ## Instrução Original do Usuário
 {original_instruction}
 
-## Schema do Dataset
-Colunas disponíveis: {', '.join([c['name'] for c in schema.get('columns', [])])}
+## Schema do Dataset (Metadados e Flags)
+{json.dumps(schema.get('columns', []), indent=2, ensure_ascii=False)}
 
 ## Dashboard Gerado (HTML — Resumo)
 ```html
@@ -114,7 +116,8 @@ Colunas disponíveis: {', '.join([c['name'] for c in schema.get('columns', [])])
 {results_text if results_text else "Resultados não disponíveis"}
 
 ## Tarefa
-Avalie o dashboard gerado com base nos critérios definidos.
-Seja específico sobre o que está bom e o que precisa melhorar.
+Avalie rigorosamente o dashboard. 
+Dê atenção especial ao uso correto das colunas de acordo com suas flags semânticas (is_key, is_value, etc.).
+Verifique se a Persona Especialista foi respeitada no tom de voz e na escolha dos KPIs.
 Retorne o JSON de avaliação.
 """

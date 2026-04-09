@@ -29,6 +29,20 @@ Todos os agentes especialistas e a camada de execução segura de código foram 
 
 ---
 
+---
+
+## 🏛️ Nova Infraestrutura (Zero-Infra Mode)
+
+Para simplificar o desenvolvimento e garantir que o Agente BI rode em qualquer máquina sem dependências externas pesadas, consolidamos a arquitetura:
+
+- **Banco de Dados Principal:** `db.sqlite3` (SQLite). Todas as tabelas de aplicação e metadados analíticos residem aqui.
+- **Processamento de Tarefas:** Celery com **Fallback Automático**.
+  - Se o **Redis** estiver ligado, ele é usado para processamento em background (UI não trava).
+  - Se o **Redis** estiver desligado, o sistema entra em **Modo síncrono**, processando tudo via memória local.
+- **Armazenamento:** `local_data/` substitui o S3/MinIO para desenvolvimento local.
+
+---
+
 ## 🚀 Próximos Passos e Pendências
 
 De acordo com a sua solicitação, ainda temos frentes importantes para consolidar:
@@ -36,21 +50,16 @@ De acordo com a sua solicitação, ainda temos frentes importantes para consolid
 ### 1. 🖥️ Interface de Acompanhamento (Painel de Agentes)
 Precisamos garantir que a tela de "Agente BI" no frontend reflita as interações entre os agentes em tempo real.
 - **Ação:** Verificar se o `TraceService` (Trace ID) está enviando todos os novos passos dos agentes especialistas (`NL2SQL_Agent`, `Pandas_Agent`) para o frontend.
-- **Visualização:** O "Dev HUD" (Monitor de Transparência) deve mostrar:
-  - *Supervisor roteando para Pandas...*
-  - *Pandas calculando correlação (0.85)...*
-  - *NL2SQL gerando query de Join...*
 
-### 2. 🧪 Testes de Stress e Validação
-Precisamos validar o fluxo completo com dados reais e variados.
-- **Teste de Domínio:** Ingerir um CSV de "Demografia" e outro de "Vendas" e confirmar se os insights deixaram de ser genéricos.
-- **Teste de Segurança:** Validar se o `PandasExecutorService` bloqueia tentativas de código malicioso (RCE).
+### 2. 🧪 Testes E2E com Dados Reais
+Validar o fluxo completo de ingestão com o arquivo `risco_credito.csv`.
+- **Ação:** Executar a importação e verificar se o **DataInterpreterAgent** gera os insights estratégicos no Topo do Preview.
 
 ---
 
-## 📌 Contexto de Verificação (Modo local_fast)
-- **Local do DB:** `C:\Users\mmaccafe\Documents\Agent-BI\storage\analytics.sqlite`
-- **Script de Teste:** Criamos um rascunho em `tmp/verify_orchestrator.py` para validar o carregamento das classes.
+## 📌 Contexto de Verificação
+- **Local do DB:** `c:\Users\mmaccafe\Documents\Agent-BI\db.sqlite3`
+- **Modo Atual:** SQLite + Redis Fallback (Síncrono se Redis OFF).
 
 ---
 

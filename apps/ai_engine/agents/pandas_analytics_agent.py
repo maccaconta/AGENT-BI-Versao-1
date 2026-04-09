@@ -8,26 +8,31 @@ from apps.ai_engine.services.pandas_executor_service import PandasExecutorServic
 
 logger = logging.getLogger(__name__)
 
-PANDAS_AGENT_SYSTEM_PROMPT = """Você é o Analista Estatístico e Financeiro Sênior da NTT DATA - Agent-BI, especialista em Pandas.
-Sua missão é realizar análises profundas que revelem a saúde financeira e operacional através dos dados.
+PANDAS_AGENT_SYSTEM_PROMPT = """Você é o Analista Quantitativo e Cientista de Dados Sênior da NTT DATA, especialista em Modelagem de Risco e Pandas.
 
-Ao planejar seu código Python, pense como um analista que busca:
-1. **Padrões e Tendências**: Não calcule apenas médias simples; busque variações no tempo, taxas de crescimento e médias móveis.
-2. **Distribuição e Risco**: Para análises de risco, identifique a concentração (ex: 80/20), desvios padrão e outliers que representam ameaças ou oportunidades.
-3. **Visão de Conjunto**: Se o usuário pedir um ranking, o resultado deve conter múltiplos registros (Top 10) para análise comparativa.
-4. **Projeção e Futuro**: Para perguntas sobre "valor futuro" ou "tendência futura", utilize modelos simples de regressão ou extrapolação (ex: `np.polyfit` ou médias móveis).
+Sua missão é transformar dados brutos em inteligência estratégica. Ao receber um dataset financeiro ou de crédito, você deve OBRIGATORIAMENTE realizar:
+
+1. **ENGENHARIA DE ATRIBUTOS (Feature Engineering)**: 
+   Não se limite às colunas originais. Crie NOVAS colunas que agreguem valor, como:
+   - `score_credito`: Um score calculado (ex: 0 a 1000) baseado em variáveis de comportamento e renda.
+   - `prob_default`: Probabilidade estimada de inadimplência (PD).
+   - `rating_risco`: Classificação categórica (ex: Baixo, Médio, Alto, Crítico).
+   - `comprometimento_renda`: % da renda comprometida com a dívida.
+
+2. **ANÁLISE DE CARTEIRA COMPLETA**:
+   - Calcule a 'Exposição Total' (EAD) somando os valores de toda a base.
+   - Analise a 'Inadimplência Real' (% de atrasos sobre o total).
+   - Distribua a carteira por faixas de Rating (Concentração de Risco).
+
+3. **MODELAGEM ESTATÍSTICA**:
+   Utilize `numpy` e `pandas` para correlações entre variáveis (ex: Idade vs Inadimplência) e aplique médias móveis ou regressões simples para projeções.
 
 ## Regras de Código:
-- Utilize o dicionário 'dfs' (ex: dfs['tabela']).
-- Atribua o dicionário/lista final de resultados à variável GLOBAL 'result'.
-- O código deve ser focado em performance e segurança.
+- SEMPRE salve a tabela resultante enriquecida e os indicadores principais no dicionário de saída.
+- O código deve ser robusto: trate valores nulos (`fillna`) antes de realizar cálculos matemáticos.
+- Atribua o dicionário final (contendo 'metrics', 'summary' e 'chart_data') à variável GLOBAL 'result'.
 
-## Saída Exigida (JSON):
-{
-  "thought": "Seu raciocínio analítico sobre quais indicadores, correlações ou projeções serão extraídos",
-  "python_code": "O código para execução",
-  "analysis_type": "CORRELATION" | "ANOMALY" | "TREND" | "DESCRIPTIVE" | "PREDICTION"
-}
+IMPORTANTE: Siga rigorosamente as **REGRAS DE NEGÓCIO ESPECIALIZADAS** (Fórmulas do Especialista no contexto). Elas sobrepõem qualquer lógica padrão.
 """
 
 PANDAS_SYNTHESIS_SYSTEM_PROMPT = """Você é o Diretor de Análise Estatística da NTT DATA. 
@@ -46,18 +51,18 @@ class PandasAnalyticsAgent:
         self.bedrock_service = BedrockService()
         self.executor = PandasExecutorService()
 
-    def analyze(self, user_prompt: str, datasets: List[Dict[str, Any]] = None, trace=None) -> Dict[str, Any]:
+    def analyze(self, user_prompt: str, datasets_profiles: List[Dict[str, Any]] = None, max_rows: int = 5000, specialist_context: str = "", trace=None) -> Dict[str, Any]:
         """
         Executa o fluxo completo: Geração de Código -> Execução -> Síntese de Insight.
         """
-        logger.info("[Assistente_Pandas] Iniciando fluxo de cálculo estatístico.")
+        logger.info(f"[Assistente_Pandas] Iniciando fluxo de cálculo estatístico (Max Rows: {max_rows}).")
         
         if trace:
-            trace.log_thought("Assistente Pandas", "Iniciando análise de dados para identificar a melhor abordagem estatística.")
+            trace.log_thought("Assistente Pandas", f"Iniciando análise de dados (limite de {max_rows} linhas) para identificar a melhor abordagem estatística.")
 
         # Prepara contexto de metadados para a LLM planejar o código
         metadata_context = []
-        for ds in datasets:
+        for ds in datasets_profiles or []:
             metadata_context.append({
                 "name": ds.get("name"),
                 "sqlite_table": ds.get("sqlite_table"),
@@ -67,6 +72,9 @@ class PandasAnalyticsAgent:
         # --- FASE 1: GERAÇÃO DE CÓDIGO ---
         planning_prompt = f"""
 Pergunta do Usuário: "{user_prompt}"
+
+=== REGRAS DE NEGÓCIO ESPECIALIZADAS (PRIORIDADE TOTAL) ===
+{specialist_context if specialist_context else "Nenhuma regra de negócio externa informada. Use lógica estatística padrão."}
 
 === Metadados dos Datasets Disponíveis ===
 {json.dumps(metadata_context, indent=2, ensure_ascii=False)}
@@ -94,7 +102,7 @@ Gere o código Python para realizar a análise estatística. Atribua o dicionár
             if trace:
                 trace.start_step("Assistente Pandas: Execução")
             
-            exec_result = self.executor.execute_analysis(code, datasets)
+            exec_result = self.executor.execute_analysis(code, datasets_profiles, max_rows=max_rows)
             
             if trace:
                 trace.end_step("Assistente Pandas: Execução", message=f"Cálculo matemático concluído via PandasExecutorService.", metadata={"code": code, "result_summary": str(exec_result["data"])[:200]})

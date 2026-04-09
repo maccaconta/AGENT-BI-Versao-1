@@ -5,6 +5,7 @@ Injeção do tenant atual na request via header X-Tenant-Slug.
 """
 import logging
 from django.http import JsonResponse
+from django.conf import settings
 from apps.users.models import Tenant, TenantMember
 
 logger = logging.getLogger(__name__)
@@ -61,10 +62,23 @@ class TenantMiddleware:
                 request.tenant = tenant
 
             except Tenant.DoesNotExist:
-                return JsonResponse(
-                    {"detail": "Tenant não encontrado."},
-                    status=404,
-                )
+                # No modo de desenvolvimento rápido, permite auto-resolver o 'default'
+                if getattr(settings, "DEBUG", False) and tenant_slug == "default":
+                    tenant, _ = Tenant.objects.get_or_create(
+                        slug="default",
+                        defaults={
+                            "name": "Default Tenant (Auto-Resolved)",
+                            "s3_prefix": "agent-bi-local-dev",
+                            "glue_database_prefix": "agent_bi_local",
+                            "athena_workgroup": "primary",
+                        }
+                    )
+                    request.tenant = tenant
+                else:
+                    return JsonResponse(
+                        {"detail": "Tenant não encontrado."},
+                        status=404,
+                    )
         elif hasattr(request, "user") and request.user.is_authenticated:
             # Fallback: usa primary_tenant do usuário
             request.tenant = request.user.primary_tenant

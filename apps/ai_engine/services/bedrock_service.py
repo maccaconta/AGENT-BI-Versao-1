@@ -55,22 +55,28 @@ class BedrockService:
     def invoke(
         self,
         system_prompt: str,
-        user_message: str,
+        user_message: Optional[str] = None,
+        messages: Optional[list] = None,
         temperature: float = 0.3,
         max_tokens: Optional[int] = None,
         stop_sequences: Optional[list] = None,
     ) -> str:
         """
         Invoca modelo Foundation via bedrock-runtime.
+        Suporta user_message unico ou lista de messages (history).
         """
         max_tokens = max_tokens or self.max_tokens
+
+        # Se nao houver messages, cria a partir de user_message
+        if not messages:
+            messages = [{"role": "user", "content": user_message}]
 
         body = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": max_tokens,
             "temperature": temperature,
             "system": system_prompt,
-            "messages": [{"role": "user", "content": user_message}],
+            "messages": messages,
         }
 
         if stop_sequences:
@@ -131,22 +137,49 @@ class BedrockService:
     def invoke_converse(
         self,
         system_prompt: str,
-        user_message: str,
+        user_message: Optional[str] = None,
+        messages: Optional[list] = None,
         temperature: float = 0.3,
         max_tokens: Optional[int] = None,
     ) -> str:
         """
         Invoca modelo via API Converse (necessario para familias como Amazon Nova).
+        Suporta tanto user_message unico quanto lista de messages (historico).
         """
         max_tokens = max_tokens or self.max_tokens
-        request_kwargs = {
-            "modelId": self.model_id,
-            "messages": [
+        
+        # Constrói a lista de mensagens no formato exigido pela Converse API
+        converse_messages = []
+        
+        if messages:
+            # Converte o formato padrao (role/content) para o formato da Converse API
+            for msg in messages:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                
+                # Formata o conteúdo para a Converse API (espera lista de blocos)
+                if isinstance(content, str):
+                    formatted_content = [{"text": content}]
+                else:
+                    formatted_content = content # Assume que já está no formato correto
+                
+                converse_messages.append({
+                    "role": role,
+                    "content": formatted_content
+                })
+        elif user_message:
+            converse_messages = [
                 {
                     "role": "user",
                     "content": [{"text": user_message}],
                 }
-            ],
+            ]
+        else:
+            raise BedrockInvocationError("user_message ou messages deve ser fornecido para invoke_converse.")
+
+        request_kwargs = {
+            "modelId": self.model_id,
+            "messages": converse_messages,
             "inferenceConfig": {
                 "temperature": temperature,
                 "maxTokens": max_tokens,
@@ -253,13 +286,15 @@ class BedrockService:
     def invoke_with_json_output(
         self,
         system_prompt: str,
-        user_message: str,
+        user_message: Optional[str] = None,
+        messages: Optional[list] = None,
         temperature: float = 0.2,
         max_tokens: Optional[int] = None,
         session_id: Optional[str] = None,
     ) -> dict:
         """
         Invoca Bedrock e espera saida JSON.
+        Suporta histórico de mensagens para sessões stateful.
         """
         json_instruction = (
             "\n\nIMPORTANTE: responda APENAS com JSON valido, "
@@ -267,7 +302,17 @@ class BedrockService:
             "Nao use markdown code blocks."
         )
 
-        user_message_with_json = user_message + json_instruction
+        current_messages = []
+        if messages:
+            current_messages = list(messages)
+            # Adiciona a instrução JSON à última mensagem do usuário se existir
+            if current_messages and current_messages[-1]["role"] == "user":
+                current_messages[-1]["content"] += json_instruction
+        elif user_message:
+            current_messages = [{"role": "user", "content": user_message + json_instruction}]
+        else:
+            raise ValueError("user_message ou messages deve ser fornecido.")
+
         metadata = {
             "provider": "bedrock",
             "model_id": self.model_id,
@@ -278,6 +323,9 @@ class BedrockService:
             "response_origin": "",
             "success": False,
         }
+        # Extrai a última mensagem para o Agent Runtime (que espera string única)
+        user_message_with_json = current_messages[-1]["content"] if current_messages else ""
+
         used_agent_runtime = False
         if self._should_use_agent_runtime():
             used_agent_runtime = True
@@ -288,7 +336,8 @@ class BedrockService:
             metadata["used_model_runtime"] = True
             runtime_api, response_text = self._invoke_model_runtime(
                 system_prompt=system_prompt,
-                user_message=user_message_with_json,
+                user_message=None,
+                messages=current_messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
@@ -309,7 +358,8 @@ class BedrockService:
             metadata["used_model_runtime"] = True
             runtime_api, fallback_text = self._invoke_model_runtime(
                 system_prompt=system_prompt,
-                user_message=user_message_with_json,
+                user_message=None,
+                messages=current_messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
@@ -392,7 +442,8 @@ class BedrockService:
     def _invoke_model_runtime(
         self,
         system_prompt: str,
-        user_message: str,
+        user_message: Optional[str] = None,
+        messages: Optional[list] = None,
         temperature: float = 0.2,
         max_tokens: Optional[int] = None,
     ) -> tuple[str, str]:
@@ -402,6 +453,7 @@ class BedrockService:
                 self.invoke_converse(
                     system_prompt=system_prompt,
                     user_message=user_message,
+                    messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
                 ),
@@ -411,6 +463,7 @@ class BedrockService:
             self.invoke(
                 system_prompt=system_prompt,
                 user_message=user_message,
+                messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
             ),
