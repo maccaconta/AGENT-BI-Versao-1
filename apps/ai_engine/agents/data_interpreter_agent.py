@@ -3,38 +3,54 @@ import logging
 from typing import Dict, Any, List
 
 from apps.ai_engine.services.bedrock_service import BedrockService
+from apps.ai_engine.services.prompt_service import PromptService
 
 logger = logging.getLogger(__name__)
 
 DATA_INTERPRETER_SYSTEM_PROMPT = """Você é o Intérprete de Dados e Especialista Semântico da NTT DATA - Agent-BI.
-Sua missão é dar alma e contexto de negócio aos dados brutos ingeridos. 
+Sua missão é dar alma e contexto de negócio aos dados brutos ingeridos, identificando a granularidade e as regras de uso analítico.
 
-Ao analisar o esquema e a amostra de dados, você deve gerar:
+## 🧠 OBJETIVOS DE INTERPRETAÇÃO:
 
-1. **MAPEAMENTO SEMÂNTICO DE COLUNAS**: 
-   Classifique cada coluna em (PRIMARY_KEY, DIMENSION, MEASURE, TIME, METADATA) e sugira uma "Descrição de Negócio" legível (ex: traduzir termos técnicos como "cli_sl" para "Saldo do Cliente"). Se for uma data, tente identificar o formato (ex: DD/MM/YYYY).
+1. **MAPEAMENTO SEMÂNTICO (ANALYTIC ROLES)**: 
+   Classifique cada coluna em (PRIMARY_KEY, DIMENSION, MEASURE, TIME, METADATA).
+   - **DIMENSION**: Colunas categóricas ideais para quebras/agrupamentos (Segmentos, Status, Região).
+   - **MEASURE**: Apenas valores financeiros ou transacionais aptos para cálculos aritméticos (Soma, Média).
+   - **🚨 ALERTA DE PERFIL**: Idade, IDs, CPFs, CEPs e Scores nunca devem ser MEASURE. Eles são DIMENSION ou METADATA.
 
-2. **RESUMO EXECUTIVO (DATASET SUMMARY)**: 
-   Um parágrafo de impacto para o C-Level explicando o que este dataset representa para a instituição (ex: "Este dataset contém a visão histórica dos últimos 24 meses de inadimplência da carteira de crédito PF").
+2. **DETECÇÃO DE GRANULARIDADE (LOWEST LEVEL)**:
+   - Identifique se o dataset representa um **Snapshot/Cadastro** (Granularidade: INDIVIDUAL - Ex: Cadastro de Clientes) ou um **Histórico/Eventos** (Granularidade: HISTORICAL - Ex: Fato Mensal de Crédito).
+   - Indique as colunas que formam a chave única.
 
-3. **DETECÇÃO DE TABELA FATO (FACT TABLE)**:
-   Identifique se o dataset é uma "Tabela Fato" (histórico de eventos). Uma tabela fato tradicional costuma ter chaves compostas que individualizam a linha: um identificador (ID, Código, CPF) + um marcador temporal (Data, Ano/Mês).
-
-4. **INSIGHTS ESTRATÉGICOS (USE CASES)**: 
-   Uma lista de até 5 casos de uso de como o banco pode usar esses dados para melhorar resultados ou mitigar riscos.
+3. **TAXONOMIA DE RISCO (DNA DOS DADOS)**:
+   Identifique colunas cruciais para modelagem de risco usando os seguintes marcadores (`risk_dna_marker`):
+   - `BALANCE`: Saldo devedor atual, principal em aberto.
+   - `INCOME`: Renda mensal ou faturamento comprovado.
+   - `LIMIT`: Limite de crédito total aprovado.
+   - `LATE_DAYS`: Dias em atraso (DPD - Days Past Due).
+   - `EXPOSURE`: Valor em risco na data base (EAD - Exposure at Default).
+   - `PROBABILITY_OF_DEFAULT`: Percentual de probabilidade de inadimplência (PD).
+   - `LOSS_GIVEN_DEFAULT`: Percentual de perda dado o default (LGD).
+   - `RECOVERY`: Valores recuperados pós-default.
+   - `COLLATERAL`: Valor de garantias (imóveis, veículos, CDBs).
+   - `CREDIT_SCORE`: Pontuação quantitativa de crédito (Bureaus ou Interno).
+   - `DEFAULT_FLAG`: Indicador binário de inadimplência (0 ou 1).
 
 ## Saída Exigida (JSON):
 {
   "dataset_summary": "Resumo executivo do dataset...",
-  "is_fact_table": true,
-  "is_fact_table_reasoning": "Raciocínio para classificar como Fato ou Dimensão/Cadastro",
-  "strategic_insights": ["Insight 1", "Insight 2", ...],
+  "granularity_level": "INDIVIDUAL" | "HISTORICAL",
+  "granularity_keys": ["col1", "col2"],
+  "strategic_insights": ["Insight 1", ...],
   "column_mapping": {
     "nome_coluna": {
       "role": "PRIMARY_KEY" | "DIMENSION" | "MEASURE" | "TIME" | "METADATA",
-      "business_description": "Descrição legível para humanos...",
-      "date_format_hint": "YYYY-MM-DD" | null,
-      "reasoning": "Porquê desta classificação"
+      "business_description": "Descrição legível para o 'Dicionário de Negócio'",
+      "grouping_suitability": "HIGH" | "MEDIUM" | "NONE",
+      "calculation_suitability": "HIGH" | "LOW" | "NONE",
+      "usage_instructions": "Diretrizes específicas de uso (ex: 'Usar para ponderação de PD')",
+      "risk_dna_marker": "BALANCE" | "INCOME" | "LIMIT" | "LATE_DAYS" | "EXPOSURE" | "PD" | "LGD" | "COLLATERAL" | "SCORE" | "DEFAULT_FLAG" | null,
+      "is_elected_for_risk": true | false
     }
   }
 }
@@ -42,18 +58,19 @@ Ao analisar o esquema e a amostra de dados, você deve gerar:
 
 class DataInterpreterAgent:
     """
-    Agente responsável por dar inteligência semântica ao esquema de dados, 
-    ajudando os outros agentes a não cometerem erros primários como agrupar por IDs.
+    Agente responsável por dar inteligência semântica ao esquema de dados.
     """
     def __init__(self):
         self.bedrock_service = BedrockService()
 
     def interpret_schema(self, columns: List[Dict[str, Any]], sample_data: List[Dict[str, Any]], domain_name: str = "") -> Dict[str, Any]:
         """
-        Analisa as colunas e dados para gerar o mapeamento semântico, resumo e insights.
-        Respeita marcações manuais (is_key, is_historical_date, etc.) se presentes no schema.
+        Analisa as colunas e dados para gerar o mapeamento semântico e instruções de uso.
         """
-        logger.info(f"[Data_Interpreter] Iniciando interpretação semântica e estratégica. Domínio: {domain_name}")
+        logger.info(f"[Data_Interpreter] Iniciando interpretação estratégica. Domínio: {domain_name}")
+        
+        # Carrega o system prompt dinâmico se disponível no BD
+        base_system_prompt = PromptService.get_system_prompt("DataInterpreterAgent", DATA_INTERPRETER_SYSTEM_PROMPT)
         
         specialist_context = ""
         if domain_name:
@@ -109,7 +126,8 @@ Gere o mapeamento semântico, o resumo estratégico e a descrição de negócio 
             result = self.bedrock_service.invoke_with_json_output(
                 system_prompt=system_prompt,
                 user_message=prompt,
-                temperature=0
+                temperature=0.1,
+                max_tokens=2500
             )
             
             if not result or "column_mapping" not in result:
@@ -127,6 +145,20 @@ Gere o mapeamento semântico, o resumo estratégico e a descrição de negócio 
                 llm_mapping[col_name] = override
                 
             result["column_mapping"] = llm_mapping
+            
+            # --- NOVO: Correção Pós-Inferência (Hard Rules) ---
+            from apps.ai_engine.services.analytics_guardrails import AnalyticsGuardrails
+            
+            # Garante que temos um dicionário válido para evitar crash no loop
+            if isinstance(llm_mapping, dict):
+                incorrect_cols = AnalyticsGuardrails.identify_incorrect_measures(llm_mapping)
+                for col in incorrect_cols:
+                    logger.warning(f"[Data_Interpreter] Corrigindo classificação da coluna '{col}': MEASURE -> DIMENSION (Regra de Segurança).")
+                    llm_mapping[col]["role"] = "DIMENSION"
+                    llm_mapping[col]["reasoning"] += " [CORRIGIDO PELO GUARDRAIL: Impedir soma de idade/IDs]"
+            else:
+                logger.error("[Data_Interpreter] LLM retornou mapeamento em formato inválido (não-dicionário).")
+                
             logger.info(f"[Data_Interpreter] Análise estratégica concluída para {len(llm_mapping)} colunas.")
             return result
             
@@ -166,15 +198,70 @@ Gere o mapeamento semântico, o resumo estratégico e a descrição de negócio 
             elif any(k in name for k in ["data", "date", "dt_", "time", "created", "update", "inicio", "fim"]):
                 role = "TIME"
                 desc = f"Data/Hora: {desc}"
-            # 3. Métricas (Numéricos que não pareçam IDs)
+            # 3. Métricas (Numéricos que não pareçam IDs nem Perfis)
             elif dtype in ["double", "float", "decimal", "int", "bigint", "long"]:
-                if role != "PRIMARY_KEY":
+                # Proteção contra campos demográficos (Idade, Tempo) serem tratados como métricas somáveis
+                demographic_keywords = ["idade", "age", "anos", "meses", "tempo", "months", "years", "sexo", "gender"]
+                if role != "PRIMARY_KEY" and not any(k in name for k in demographic_keywords):
                    role = "MEASURE"
                    desc = f"Métrica: {desc}"
+                else:
+                   role = "DIMENSION"
+                   desc = f"Perfil/Atributo: {desc}"
             
+            # Identifica Marcadores de DNA de Risco (Elected Variables)
+            risk_marker = None
+            is_elected = False
+            
+            # Normaliza o nome para busca em keywords
+            n = name.lower()
+            
+            # 1. Saldo / Exposição (BALANCE/EXPOSURE)
+            if any(k in n for k in ["saldo", "balance_mes", "exp_total", "valor_devedor", "exposure", "ead", "vlr_dev"]):
+                risk_marker = "BALANCE"
+                is_elected = True
+            # 2. Renda (INCOME)
+            elif any(k in n for k in ["renda", "income", "salario", "faturamento", "receita_mensal"]):
+                risk_marker = "INCOME"
+                is_elected = True
+            # 3. Atraso (LATE_DAYS)
+            elif any(k in n for k in ["atraso", "late_days", "dias_vencido", "dpd", "overdue", "aging"]):
+                risk_marker = "LATE_DAYS"
+                is_elected = True
+            # 4. Limite (LIMIT)
+            elif any(k in n for k in ["limite", "limit_credito", "max_cap", "lim_aprovado"]):
+                risk_marker = "LIMIT"
+                is_elected = True
+            # 5. Probabilidade de Default (PD)
+            elif any(k in n for k in ["pd_", "probabilidade", "prob_default", "p_default"]):
+                risk_marker = "PD"
+                is_elected = True
+            # 6. Perda dado o Default (LGD)
+            elif any(k in n for k in ["lgd_", "loss_given", "perda_default"]):
+                risk_marker = "LGD"
+                is_elected = True
+            # 7. Garantias (COLLATERAL)
+            elif any(k in n for k in ["garantia", "collateral", "imovel_vlr", "veiculo_vlr", "ltv_"]):
+                risk_marker = "COLLATERAL"
+                is_elected = True
+            # 8. Score de Crédito (SCORE)
+            elif any(k in n for k in ["score", "rating", "pontuacao", "bureau", "serasa", "boavista"]):
+                risk_marker = "SCORE"
+                is_elected = True
+            # 9. Recuperação (RECOVERY)
+            elif any(k in n for k in ["recuperacao", "recovery", "vlr_pago_atraso"]):
+                risk_marker = "RECOVERY"
+                is_elected = True
+            # 10. Default Flag (DEFAULT)
+            elif any(k in n for k in ["flag_default", "is_default", "inadimplente", "bad_"]):
+                risk_marker = "DEFAULT_FLAG"
+                is_elected = True
+
             mapping[col.get("name")] = {
                 "role": role,
                 "business_description": desc,
+                "risk_dna_marker": risk_marker,
+                "is_elected_for_risk": is_elected,
                 "reasoning": reason
             }
             print(f"   - [Heurística] {col.get('name')} -> {role} ({desc})")

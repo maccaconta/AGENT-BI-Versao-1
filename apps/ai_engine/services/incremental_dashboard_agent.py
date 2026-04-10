@@ -7,12 +7,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
+from datetime import datetime
 from typing import Optional
 
 from django.conf import settings
 
-from apps.ai_engine.prompts.incremental_dashboard_prompt import INCREMENTAL_DASHBOARD_SYSTEM_PROMPT
 from apps.ai_engine.services.bedrock_service import BedrockService
+from apps.ai_engine.services.prompt_service import PromptService
 from apps.ai_engine.services.html_renderer_service import DashboardHtmlRendererService
 from apps.ai_engine.services.nl2sql_service import NL2SQLService
 from apps.ai_engine.agents.nl2sql_agent import NL2SQLAgent
@@ -31,6 +33,9 @@ from apps.ai_engine.agents.pandas_analytics_agent import PandasAnalyticsAgent
 from apps.ai_engine.agents.rag_knowledge_agent import RAGKnowledgeAgent
 from apps.ai_engine.agents.critic_agent import CriticAgent
 from apps.ai_engine.agents.data_interpreter_agent import DataInterpreterAgent
+from apps.ai_engine.prompts.incremental_dashboard_prompt import (
+    INCREMENTAL_DASHBOARD_SYSTEM_PROMPT,
+)
 from apps.shared_models import PromptTemplate
 
 logger = logging.getLogger(__name__)
@@ -87,6 +92,14 @@ class IncrementalDashboardAgentService:
                 "cols": ds.get("column_count"),
                 "temporal": is_temp
             })
+        # --- NOVO: Captura de Auditoria ---
+        context["audit_trail"] = {
+            "orchestrator_thought": "",
+            "pandas_code": "",
+            "pandas_thought": "",
+            "nl2sql_sql": "",
+            "nl2sql_thought": ""
+        }
 
         # --- MULTI-AGENT ROUTING (ASSISTENTES) ---
         # --- DATA INTERPRETATION (SEMANTIC ANALYTICS) ---
@@ -104,7 +117,20 @@ class IncrementalDashboardAgentService:
             semantic_mapping[ds.get("sqlite_table")] = table_mapping.get("column_mapping", {})
         
         context["semantic_mapping"] = semantic_mapping
-        trace.end_step("Data Interpreter: Análise Semântica", message=f"Mapeamento semântico gerado para {len(semantic_mapping)} tabelas.")
+        
+        # Consolida as Variáveis Eleitas para Risco (Risk DNA Context)
+        risk_dna_context = {}
+        for table, mapping in semantic_mapping.items():
+            for col, info in mapping.items():
+                if info.get("is_elected_for_risk"):
+                    marker = info.get("risk_dna_marker")
+                    risk_dna_context[marker] = {
+                        "column": col,
+                        "description": info.get("business_description")
+                    }
+        context["risk_dna_context"] = risk_dna_context
+        
+        trace.end_step("Data Interpreter: Análise Semântica", message=f"Mapeamento semântico e DNA de Risco ({len(risk_dna_context)} marcadores) gerados.")
 
         # --- SPECIALIST & COMPLIANCE PROMPTS ---
         trace.start_step("Prompt Library: Carregando Especialistas")
@@ -136,8 +162,10 @@ class IncrementalDashboardAgentService:
         trace.start_step("Supervisor: Escaneamento")
         supervisor = SupervisorAgent()
         
-        # Injeta o Especialista como MANDATO DE MISSÃO no roteamento
+        # Injeta o Especialista e o DNA de Risco como MANDATO DE MISSÃO
         supervisor_context = f"MANDATO DE MISSÃO (PRIORIDADE TOTAL): Este é um projeto de {domain_name}. "
+        if context.get("risk_dna_context"):
+            supervisor_context += f"VARIÁVEIS ELEITAS PARA RISCO: {json.dumps(context['risk_dna_context'], ensure_ascii=False)}\n"
         if specialist_prompt:
             supervisor_context += f"Siga rigorosamente estas diretrizes: {specialist_prompt}\n\n"
         
@@ -149,20 +177,87 @@ class IncrementalDashboardAgentService:
         trace.end_step("Supervisor: Escaneamento", message=f"Intenção detectada. Delegando para {route_selected}.", metadata={"routing_decision": routing_decision})
         
         context["routing_decision"] = routing_decision
+        context["audit_trail"]["orchestrator_thought"] = routing_decision.get("reasoning", "")
         
         if route_selected == "ROUTE_PANDAS":
             pandas_assistant = PandasAnalyticsAgent()
-            profiles = [ds.get("data_profile", {}) for ds in context.get("datasets", [])]
+            critic = CriticAgent()
             max_rows = context.get("analysis_max_rows", 5000)
-            # Passa os insights do RAG para o Pandas respeitar as fórmulas
-            p_result = pandas_assistant.analyze(
-                user_prompt=context.get("currentUserPrompt", ""), 
-                datasets_profiles=profiles, 
-                max_rows=max_rows, 
-                specialist_context=context.get("specialist_insights", ""),
-                trace=trace
-            )
-            context["specialist_insights"] = (context.get("specialist_insights", "") + "\n\n" + p_result.get("analysis", "")).strip()
+            
+            # --- LOOP DE CRÍTICA E REFINAÇÃO (Máximo 2 tentativas) ---
+            p_result = None
+            feedback = ""
+            for attempt in range(1, 3):
+                trace.start_step(f"Assistente Pandas: Geração (Tentativa {attempt})")
+                p_result = pandas_assistant.analyze(
+                    user_prompt=context.get("currentUserPrompt", ""), 
+                    datasets_metadata=context.get("datasets", []), 
+                    max_rows=max_rows, 
+                    specialist_context=str(context.get("specialist_insights", "")),
+                    risk_dna_context=context.get("risk_dna_context"),
+                    feedback=feedback,
+                    trace=trace
+                )
+                trace.end_step(f"Assistente Pandas: Geração (Tentativa {attempt})")
+
+                # Avaliação Rigorosa do Critic
+                trace.start_step(f"Critic: Auditoria de Governança (Tentativa {attempt})")
+                critic_eval = critic.evaluate(
+                    original_instruction=context.get("currentUserPrompt", ""),
+                    generated_html="", # Dashboard ainda não montado
+                    sql_queries=[], 
+                    query_results=[],
+                    schema={"columns": context.get("datasets", [{}])[0].get("schema_json", {}).get("columns", [])},
+                    dataset=None,
+                    iteration=attempt,
+                    python_code=p_result.get("python_code", ""),
+                    pandas_thought=p_result.get("thought", "")
+                )
+                trace.end_step(f"Critic: Auditoria de Governança (Tentativa {attempt})", 
+                              message=f"Score: {critic_eval.score:.2f} | Governança: {critic_eval.governance_score:.2f}",
+                              metadata=critic_eval.to_dict())
+
+                if critic_eval.approved or attempt == 2:
+                    break
+                
+                # Prepara feedback para a próxima rodada
+                feedback = f"Sua tentativa anterior foi REPROVADA. Problemas: {', '.join(critic_eval.issues)}. Sugestões: {', '.join(critic_eval.suggestions)}"
+                logger.warning(f"[Orquestrador] Código Pandas reprovado pelo Critic. Tentando refinação. Motivo: {feedback}")
+
+            # Prossegue com o resultado final (aprovado ou última tentativa)
+            current_insights = str(context.get("specialist_insights", ""))
+            new_analysis = str(p_result.get("analysis", ""))
+            context["specialist_insights"] = f"{current_insights}\n\n{new_analysis}".strip()
+            
+            # --- CAPTURA AUDITORIA PANDAS ---
+            context["audit_trail"]["pandas_code"] = p_result.get("python_code", "")
+            context["audit_trail"]["pandas_thought"] = p_result.get("thought", "")
+            
+            # --- NOVO: Materialização de Resultados Enriquecidos ---
+            calculation_data = p_result.get("calculation_data", {})
+            df_enriched = None
+            if isinstance(calculation_data, dict):
+                df_enriched = calculation_data.get("dataframe_processed")
+            
+            if df_enriched is not None:
+                from apps.datasets.services.sqlite_analytics_store import build_sqlite_table_name
+                # Gera um nome de tabela único para esta sessão analítica
+                enriched_table_name = f"tmp_enriched_{uuid.uuid4().hex[:8]}"
+                if self.pandas_executor.materialize_dataframe(df_enriched, enriched_table_name):
+                    context["materialized_table"] = enriched_table_name
+                    # Expõe o novo schema para que o Gerador de UI saiba o que existe
+                    context["materialized_schema"] = list(df_enriched.columns)
+                    
+                    # Persistência Analítica (Memória): Guardamos o mapa de colunas e uma amostra para a LLM
+                    context["analytical_memory"]["enriched_metadata"] = {
+                        "table_name": enriched_table_name,
+                        "columns": context["materialized_schema"],
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    
+                    logger.info(f"[Orquestrador] Dataset enriquecido materializado: {enriched_table_name}")
+                    if trace:
+                        trace.log_thought("Orquestrador", f"Cálculos de risco materializados na tabela '{enriched_table_name}'.")
             
         elif route_selected == "ROUTE_KB_RAG" and not context.get("specialist_insights"):
             # Caso a rota seja KB_RAG e já não tenhamos consultado acima (redundância de segurança)
@@ -180,7 +275,16 @@ class IncrementalDashboardAgentService:
                 trace=trace
             )
             context["specialist_sql"] = n_result.get("sql", "")
+            # --- CAPTURA AUDITORIA NL2SQL ---
+            context["audit_trail"]["nl2sql_sql"] = n_result.get("sql", "")
+            context["audit_trail"]["nl2sql_thought"] = n_result.get("description", "")
             context["specialist_insights"] = (context.get("specialist_insights", "") + "\n\n" + n_result.get("description", "")).strip()
+
+        # --- NOVO: Ajuste de Rota do SQL Final ---
+        if context.get("materialized_table"):
+            # Se houve materialização, forçamos o SQL final a ler da tabela enriquecida
+            context["specialist_sql"] = f"SELECT * FROM {context['materialized_table']}"
+            context["specialist_insights"] += f"\n\nFONTE DE DADOS: Os KPIs calculados foram consolidados na tabela '{context['materialized_table']}'."
         # ---------------------------
 
         strict_bedrock = bool(request_data.get("requireBedrock", False))
@@ -238,6 +342,27 @@ class IncrementalDashboardAgentService:
                     messages.append({"role": "user", "content": current_user_message})
 
                     bedrock_client = self._bedrock_client()
+                    
+                    # Validação prévia de tokens para evitar truncamento silencioso
+                    estimated_tokens = bedrock_client.count_tokens_estimate(system_prompt + current_user_message)
+                    max_allowed_tokens = getattr(settings, "BEDROCK_MAX_TOKENS", 8192)
+                    buffer_for_output = 2000  # Reserva para resposta
+                    
+                    if estimated_tokens > (max_allowed_tokens - buffer_for_output):
+                        logger.warning(
+                            "Prompt estimado em %d tokens excede limite (%d - %d buffer = %d). "
+                            "Truncando contexto RAG para evitar falha.",
+                            estimated_tokens, max_allowed_tokens, buffer_for_output, max_allowed_tokens - buffer_for_output
+                        )
+                        # Trunca contexto RAG se necessário
+                        if "ragRetrievedContext" in context and context["ragRetrievedContext"]:
+                            original_count = len(context["ragRetrievedContext"])
+                            # Mantém apenas os 3 primeiros snippets mais relevantes
+                            context["ragRetrievedContext"] = context["ragRetrievedContext"][:3]
+                            logger.info("Contexto RAG truncado de %d para %d snippets", original_count, len(context["ragRetrievedContext"]))
+                            # Reconstrói user_message com contexto truncado
+                            current_user_message = self._build_user_message(context)
+                    
                     response = bedrock_client.invoke_with_json_output(
                         system_prompt=system_prompt,
                         messages=messages,
@@ -348,6 +473,10 @@ class IncrementalDashboardAgentService:
         final_result["dashboard_html"] = final_result["htmlDashboard"]
         final_result["sql"] = final_result["sqlProposal"]["sql"]
         final_result["insights"] = final_result["footerInsights"]
+        
+        # --- EXPOSIÇÃO DA AUDITORIA PARA O FRONTEND ---
+        final_result["auditTrail"] = context.get("audit_trail", {})
+        
         return final_result
 
     def _build_context(self, request_data: dict, request_user=None, trace=None) -> dict:
@@ -514,9 +643,14 @@ class IncrementalDashboardAgentService:
         return ""
 
     def _build_user_message(self, context: dict) -> str:
+        # Inicialização defensiva para evitar NameError durante a renderização do prompt
+        rag_block = ""
+        hints_block = ""
+        specialist_text = ""
+        memory_text = ""
+
         # 1. Extrair e destacar diretrizes da Knowledge Base como bloco mandatorio
         rag_snippets = context.get("ragRetrievedContext") or []
-        rag_block = ""
         if rag_snippets:
             rag_lines = []
             for snippet in rag_snippets:
@@ -533,41 +667,67 @@ class IncrementalDashboardAgentService:
                     + "\n===== FIM DAS DIRETRIZES - REGRAS ABSOLUTAS, NAO SUGESTOES =====\n"
                 )
 
-        # 2. Payload de contexto analitico (sem duplicar o RAG)
-        payload = {k: v for k, v in context.items() if k not in {"dashboard", "project", "ragRetrievedContext"}}
+        # 2. Shadowing de Datasets: Se houver materialização, "mascaramos" a tabela bruta para forçar a versão inteligente
+        datasets_shadowed = []
+        materialized_table = context.get("materialized_table")
+        materialized_schema = context.get("materialized_schema") or []
 
-        # 3. Sinalizacao de recursos extras (Data Profiling Layers)
-        feature_hints = []
-        for ds in context.get("datasets", []):
-            profile = ds.get("data_profile", {})
-            if profile.get("temporal", {}).get("has_temporal_data"):
-                feature_hints.append(f"O dataset '{ds.get('name')}' possui perfilamento de TENDENCIA TEMPORAL disponivel.")
+        for ds in context.get("datasets") or []:
+            ds_copy = ds.copy()
+            # Se este dataset foi o que sofreu enriquecimento (simplificamos assumindo o primeiro ou correspondência de schema)
+            # No futuro podemos fazer match por sqlite_table original
+            if materialized_table:
+                # Shadowing: A IA verá a tabela materializada como se fosse a original, mas com o schema expandido
+                ds_copy["sqlite_table"] = materialized_table
+                # Mescla colunas originais com as calculadas se necessário, ou usa apenas o novo schema
+                if ds_copy.get("schema_json"):
+                    # Garantimos que as novas colunas apareçam nos metadados para a LLM
+                    current_cols = [c.get("name") for c in ds_copy["schema_json"].get("columns", [])]
+                    for new_col in materialized_schema:
+                        if new_col not in current_cols:
+                            ds_copy["schema_json"]["columns"].append({
+                                "name": new_col,
+                                "type": "calculated",
+                                "description": "Coluna calculada via Pandas (Alta Fidelidade)"
+                            })
+                
+            datasets_shadowed.append(ds_copy)
 
-        hints_block = ""
-        if feature_hints:
-            hints_block = "\nRECURSOS DE DADOS DISPONIVEIS:\n" + "\n".join([f"- {h}" for h in feature_hints]) + "\n"
+        # 2. Payload de contexto analitico (Reduzido para evitar saturação)
+        payload = {
+            "currentUserPrompt": context.get("currentUserPrompt"),
+            "dataDomain": context.get("dataDomain"),
+            "specialist_insights": context.get("specialist_insights"),
+            "specialist_sql": context.get("specialist_sql"), # INJETADO: Sugestão mestre para a LLM
+            "materialized_table": materialized_table,
+            "materialized_schema": materialized_schema,
+            "datasets": datasets_shadowed, # SHADOWED: A IA verá apenas a fonte inteligente
+            "semantic_mapping": context.get("semantic_mapping") if not materialized_table else None,
+            "previousBusinessLogic": context.get("previousBusinessLogic"),
+            "analytical_memory": context.get("analytical_memory")
+        }
 
-        specialist_text = ""
-        if context.get("specialist_insights"):
-            specialist_text = "\n===== DIRETRIZES TÉCNICAS E FÓRMULAS (RAG/KB) - PRIORIDADE MÁXIMA =====\n"
-            specialist_text += context["specialist_insights"] + "\n========================================================================\n"
-
-            memory_text = "\n===== MEMÓRIA ANALÍTICA E DE CÁLCULO (ITERAÇÕES ANTERIORES) =====\n"
-            memory_text += "Atenção: Os cálculos e premissas abaixo foram validados e devem ser mantidos ou evoluídos:\n"
-            if context.get("analytical_memory"):
-                memory_text += f"DADOS ESTRUTURADOS: {json.dumps(context['analytical_memory'], ensure_ascii=False)}\n"
-            memory_text += f"METODOLOGIA NARRATIVA: {context['previousBusinessLogic']}\n"
-            memory_text += "========================================================================\n"
+        # 3. Mandato de Exibição (Injetado apenas se houver dados enriquecidos)
+        rendering_mandate = ""
+        if context.get("materialized_table"):
+            rendering_mandate = (
+                "\n\n🚨 MISSÃO DE RENDERIZAÇÃO (PRIORIDADE CRÍTICA):\n"
+                f"O Assistente Pandas gerou uma tabela enriquecida: '{context.get('materialized_table')}'\n"
+                f"COLUNAS CALCULADAS DISPONÍVEIS: {', '.join(context.get('materialized_schema', []))}\n"
+                "IMPORTANTE: Você DEVE utilizar estas colunas calculadas para os gráficos e indicadores principais.\n"
+                "Não use as colunas brutas se existir uma versão calculada (ex: use 'score_risco' em vez de score original).\n"
+            )
 
         return (
             "Evolue incrementalmente o dashboard analisando os dados semânticos e contextuais abaixo.\n"
             "MANTENHA O FOCO ANALÍTICO NA INTENÇÃO DO USUÁRIO (PRIORIDADE MÁXIMA).\n"
-            f"DIRETRIZ DO USUÁRIO: \"{context.get('currentUserPrompt')}\"\n\n"
+            f"DIRETRIZ DO USUÁRIO: \"{context.get('currentUserPrompt')}\"\n"
+            f"{rendering_mandate}\n"
             f"{rag_block}\n"
             f"{hints_block}\n"
             f"{specialist_text}\n"
             f"{memory_text}\n"
-            "===== CONTEXTO DE NEGÓCIO E MAPEAMENTO SEMÂNTICO =====\n"
+            "===== CONTEXTO DE NEGÓCIO E DADOS ENRIQUECIDOS =====\n"
             f"{json.dumps(payload, ensure_ascii=False, default=str, indent=2)}"
         )
 
@@ -575,7 +735,8 @@ class IncrementalDashboardAgentService:
         """
         Constrói o prompt de sistema composto (Super Prompt) seguindo a hierarquia aprovada.
         """
-        base_prompt = INCREMENTAL_DASHBOARD_SYSTEM_PROMPT
+        # Carrega o system prompt base do banco de dados (Prompt Governance)
+        base_prompt = PromptService.get_system_prompt("IncrementalDashboardAgent", INCREMENTAL_DASHBOARD_SYSTEM_PROMPT)
         specialist = context.get("specialist_prompt_content", "")
         compliance = context.get("compliance_prompt_content", "")
         
@@ -643,6 +804,10 @@ Você recebeu um mapeamento semântico (`semantic_mapping`) no contexto do usuá
         analysis_intent_raw = response.get("analysisIntent")
         if not isinstance(analysis_intent_raw, dict):
             analysis_intent_raw = {}
+        
+        # Extração de Cadeia de Pensamento (Thought Process)
+        analytical_thought = response.get("analyticalThoughtProcess") or response.get("thought") or ""
+        
         analysis_intent = {
             "goal": analysis_intent_raw.get("goal") or fallback["analysisIntent"]["goal"],
             "contextFusionSummary": (
@@ -710,6 +875,7 @@ Você recebeu um mapeamento semântico (`semantic_mapping`) no contexto do usuá
             follow_up_suggestions = []
 
         result = {
+            "analyticalThoughtProcess": analytical_thought,
             "applicationAnalysis": application_analysis,
             "architecturePlan": architecture_plan,
             "analysisIntent": analysis_intent,
@@ -783,7 +949,7 @@ Você recebeu um mapeamento semântico (`semantic_mapping`) no contexto do usuá
                 "data_profile": dataset.data_profile_json or {},
                 "glue_table": dataset.glue_table,
                 "glue_database": dataset.glue_database,
-                "sqlite_table": self._build_sqlite_table_name(str(dataset.id), dataset.name),
+                "sqlite_table": dataset.glue_table or self._build_sqlite_table_name(str(dataset.id), dataset.name),
             })
         return datasets
 

@@ -32,7 +32,7 @@ class BedrockService:
     MODEL_ID = "anthropic.claude-3-5-sonnet-20241022-v2:0"
     MAX_RETRIES = 3
     RETRY_DELAY = 5  # segundos
-    READ_TIMEOUT = 60  # segundos para evitar hang infinito
+    READ_TIMEOUT = 120  # Aumentado para lidar com inferências complexas do Nova
 
     def __init__(self):
         region = getattr(settings, "BEDROCK_REGION", "") or getattr(settings, "AWS_REGION", "us-east-1")
@@ -134,6 +134,9 @@ class BedrockService:
                 else:
                     raise BedrockInvocationError(str(exc)) from exc
 
+    def generate_text(self, system_prompt: str, user_message: str, max_tokens: int = 500) -> str:
+        """Alias de compatibilidade para o método invoke."""
+        return self.invoke(system_prompt=system_prompt, user_message=user_message, max_tokens=max_tokens)
     def invoke_converse(
         self,
         system_prompt: str,
@@ -266,6 +269,12 @@ class BedrockService:
                 endSession=end_session,
             )
             text = self._collect_agent_completion_text(response)
+            
+            # Detecção de erros retornados como texto (característica de alguns comportamentos do Bedrock)
+            if "Session is terminated" in text or "AccessDenied" in text:
+                logger.error(f"Erro detectado no corpo da resposta do Agent: {text}")
+                raise BedrockInvocationError(f"Erro no Agent Runtime: {text}")
+
             elapsed = time.time() - start_time
             logger.info(
                 "Bedrock invoke_agent: agent_id=%s alias_id=%s session_id=%s elapsed=%.2fs",
@@ -331,7 +340,11 @@ class BedrockService:
             used_agent_runtime = True
             metadata["used_agent_runtime"] = True
             payload = self._build_agent_input_message(system_prompt, user_message_with_json)
-            response_text = self.invoke_agent(user_message=payload, session_id=session_id, end_session=True)
+            try:
+                response_text = self.invoke_agent(user_message=payload, session_id=session_id, end_session=True)
+            except (BedrockInvocationError, Exception) as e:
+                logger.warning(f"Falha ao invocar Agent Runtime ({e}). Tentando fallback para Model Runtime.")
+                response_text = "" # Força falha no parse inicial para disparar o fallback abaixo
         else:
             metadata["used_model_runtime"] = True
             runtime_api, response_text = self._invoke_model_runtime(
@@ -511,33 +524,46 @@ class BedrockService:
         return text
 
     def _parse_json_response(self, response_text: str) -> dict | None:
-        text = (response_text or "").strip()
-        if not text:
+        if not response_text:
             return None
-
-        if text.startswith("```json"):
-            text = text[7:]
-        if text.startswith("```"):
-            text = text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
-
+            
+        text = response_text.strip()
+        
+        # 1. Tentativa 1: JSON Direto (mais rápido)
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             pass
 
-        # Tenta extrair primeiro objeto JSON do texto.
-        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-        if not match:
-            logger.error("Falha ao parsear JSON do Bedrock. response=%s", (response_text or "")[:500])
-            return None
+        # 2. Tentativa 2: Extrair bloco de markdown ```json ... ``` com segurança
+        if "```" in text:
+            # Encontra o que estiver entre os primeiros ``` e os últimos ```
+            try:
+                # Tenta primeiro com a tag json
+                match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+                if not match:
+                    # Tenta apenas os backticks
+                    match = re.search(r"```\s*(.*?)\s*```", text, re.DOTALL)
+                
+                if match:
+                    candidate = match.group(1).strip()
+                    return json.loads(candidate)
+            except (json.JSONDecodeError, AttributeError, ValueError):
+                pass
+
+        # 3. Tentativa 3: Força bruta - encontrar o primeiro { e o último }
+        # Esta é a técnica mais resiliente para modelos que "falam" antes do JSON
         try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            logger.error("Falha ao parsear JSON do Bedrock. response=%s", (response_text or "")[:500])
-            return None
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                json_part = text[start:end+1]
+                return json.loads(json_part)
+        except (json.JSONDecodeError, ValueError):
+            pass
+            
+        logger.error("Falha total ao processar JSON do Bedrock. response=%s", (response_text or "")[:500])
+        return None
 
     def _extract_kb_source(self, location: dict) -> str:
         """
@@ -565,3 +591,23 @@ class BedrockService:
             return document_uri
 
         return ""
+
+    def generate_text(
+        self,
+        system_prompt: str,
+        user_message: str,
+        temperature: float = 0.3,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """
+        Método wrapper para gerar texto. Usado pelos agentes Supervisor e Pandas.
+        Decide automaticamente entre invoke ou invoke_converse baseado no modelo.
+        """
+        _, response_text = self._invoke_model_runtime(
+            system_prompt=system_prompt,
+            user_message=user_message,
+            messages=None,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return response_text

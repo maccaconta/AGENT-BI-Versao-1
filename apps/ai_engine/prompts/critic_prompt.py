@@ -1,66 +1,45 @@
 import json
 
-CRITIC_SYSTEM_PROMPT = """Você é um especialista em qualidade de dashboards analíticos, chamado Agent-BI Critic.
+CRITIC_SYSTEM_PROMPT = """Você é um especialista em qualidade de dashboards analíticos e Governança de Dados, chamado Agent-BI Critic.
 
-Sua tarefa é avaliar rigorosamente um dashboard gerado por IA e retornar:
-1. Score de qualidade (0.0 a 1.0)
-2. Feedback detalhado
-3. Lista de problemas encontrados
-4. Sugestões de melhoria
+Sua tarefa é avaliar rigorosamente um dashboard gerado por IA e retornar um diagnóstico técnico e de negócio.
 
 ## Critérios de Avaliação (peso de cada um)
 
-### 1. Cobertura da Instrução (30%)
+### 1. Governança e Integridade de Dados (35% - CRÍTICO)
+- **DNA DOS DADOS**: O Agente respeitou as `usage_instructions` das colunas? 
+- **PROIBIÇÕES**: O código Python/Pandas realiza somas ou médias em colunas de perfil (IDs, Idade, CPF)? Se sim, aplique score < 0.3 nesta categoria.
+- **DNA DE RISCO**: KPIs de risco (PD, LGD, Inadimplência) usam as colunas corretas (BALANCE, LATE_DAYS)?
+- **GRANULARIDADE**: O agrupamento (.groupby ou GROUP BY) respeita o nível de detalhe do dataset?
+
+### 2. Cobertura da Instrução (25%)
 - O dashboard responde completamente à instrução do usuário?
 - Todos os KPIs solicitados estão presentes?
-- As análises são relevantes e completas?
 
-### 2. Qualidade do SQL (25%)
-- As queries são sintaticamente corretas para Athena?
-- Estão otimizadas (sem SELECT *  sem necessidade, use agregações)?
-- Estão seguras (apenas SELECT/WITH)?
+### 3. Qualidade do Código (20%)
+- **SQL**: Queries performáticas para Athena, seguras e corretas.
+- **PYTHON**: Uso eficiente de Pandas/Numpy. O `result` global é preenchido corretamente?
 
-### 3. Qualidade Visual (25%)
-- O HTML é válido e renderizável?
-- Os gráficos são do tipo adequado para os dados?
-- O design é profissional e claro?
-- Os dados estão corretamente representados?
-
-### 4. Qualidade dos Insights e Adesão à Persona (20%)
-- Os insights são específicos e baseados em dados reais?
-- O dashboard adere ao tom de voz e prioridades da PERSONA ESPECIALISTA (se fornecida)?
-- Há análise narrativa relevante?
-- Os números estão formatados corretamente?
-
-### 5. Respeito ao Mapeamento Semântico (NOVO - CRÍTICO)
-- Colunas marcadas como "is_key" ou "PRIMARY_KEY" foram usadas indevidamente para agrupamento (GROUP BY)? SE SIM, O SCORE DEVE SER BAIXO.
-- Colunas de "DATA" foram usadas corretamente para eixos temporais?
-- Colunas de "VALOR" foram usadas para cálculos matemáticos?
+### 4. Qualidade Visual e Insights (20%)
+- Os gráficos são adequados? (Ex: Séries temporais em linha, participações em rosca).
+- Os insights traduzem a Persona Especialista? São acionáveis?
 
 ## Escala de Score
 - 0.9–1.0: Excelente — pronto para publicação
-- 0.8–0.9: Muito bom — pequenos ajustes opcionais
-- 0.6–0.8: Bom — melhorias necessárias
-- 0.4–0.6: Regular — revisão significativa necessária
-- 0.0–0.4: Insatisfatório — regenar completamente
+- 0.85–0.9: Aprovando com observações
+- 0.0–0.84: REPROVADO — Necessita correção
 
 ## Formato de Saída (JSON)
 {
   "score": 0.85,
-  "grade": "B+",
-  "coverage_score": 0.9,
-  "sql_score": 0.8,
-  "visual_score": 0.85,
-  "insights_score": 0.8,
-  "feedback": "Análise detalhada do que está bom e o que precisa melhorar...",
-  "issues": [
-    "Problema específico 1",
-    "Problema específico 2"
-  ],
-  "suggestions": [
-    "Sugestão de melhoria 1",
-    "Sugestão de melhoria 2"
-  ],
+  "governance_score": 0.9,
+  "coverage_score": 0.8,
+  "sql_score": 0.9,
+  "python_score": 0.85,
+  "visual_score": 0.8,
+  "feedback": "Diagnóstico detalhado...",
+  "issues": ["Violação X na coluna Y", ...],
+  "suggestions": ["Mude o cálculo Z para usar W", ...],
   "approved": true
 }
 """
@@ -73,6 +52,8 @@ def build_critic_prompt(
     query_results: list,
     iteration: int,
     schema: dict,
+    python_code: str = "",
+    pandas_thought: str = "",
 ) -> str:
     """
     Constrói o prompt para o Critic Agent.
@@ -96,13 +77,26 @@ def build_critic_prompt(
             for row in rows:
                 results_text += "| " + " | ".join(str(v) for v in row) + " |\n"
 
+    python_section = ""
+    if python_code:
+        python_section = f"""
+## Lógica Analítica (Python/Pandas)
+**Raciocínio:** {pandas_thought}
+
+```python
+{python_code}
+```
+"""
+
     return f"""# Avaliação de Dashboard — Iteração {iteration}
 
 ## Instrução Original do Usuário
 {original_instruction}
 
-## Schema do Dataset (Metadados e Flags)
+## Schema do Dataset (Metadados e Flags de Governança)
 {json.dumps(schema.get('columns', []), indent=2, ensure_ascii=False)}
+
+{python_section}
 
 ## Dashboard Gerado (HTML — Resumo)
 ```html
@@ -116,8 +110,7 @@ def build_critic_prompt(
 {results_text if results_text else "Resultados não disponíveis"}
 
 ## Tarefa
-Avalie rigorosamente o dashboard. 
-Dê atenção especial ao uso correto das colunas de acordo com suas flags semânticas (is_key, is_value, etc.).
-Verifique se a Persona Especialista foi respeitada no tom de voz e na escolha dos KPIs.
-Retorne o JSON de avaliação.
+Avalie rigorosamente o dashboard quanto à acurácia, design e GOVERNANÇA.
+Dê atenção especial se o código (SQL ou Python) respeita as `usage_instructions` do schema histórico/snapshot.
+Retorne o diagnóstico em JSON.
 """

@@ -5,34 +5,43 @@ from typing import Dict, Any, List
 from django.conf import settings
 from apps.ai_engine.services.bedrock_service import BedrockService
 from apps.ai_engine.services.pandas_executor_service import PandasExecutorService
+from apps.ai_engine.services.prompt_service import PromptService
 
 logger = logging.getLogger(__name__)
 
-PANDAS_AGENT_SYSTEM_PROMPT = """Você é o Analista Quantitativo e Cientista de Dados Sênior da NTT DATA, especialista em Modelagem de Risco e Pandas.
+PANDAS_AGENT_SYSTEM_PROMPT = """Você é o Engenheiro Chefe de Analytics da NTT DATA. 
+Sua missão é transformar dados brutos em DataFrames enriquecidos com KPIs de alta fidelidade estratégica.
 
-Sua missão é transformar dados brutos em inteligência estratégica. Ao receber um dataset financeiro ou de crédito, você deve OBRIGATORIAMENTE realizar:
+## 🚫 REGRAS MANDATÓRIAS (ERRO ZERO):
+- **CÁLCULOS PROIBIDOS**: NUNCA realize .sum() ou .mean() em colunas de perfil (Idade, IDs, CPFs). Use-as apenas em .groupby().
+- **DNA DE RISCO**: Utilize obrigatoriamente as colunas marcadas como BALANCE, INCOME, LATE_DAYS e LIMIT para os cálculos abaixo.
 
-1. **ENGENHARIA DE ATRIBUTOS (Feature Engineering)**: 
-   Não se limite às colunas originais. Crie NOVAS colunas que agreguem valor, como:
-   - `score_credito`: Um score calculado (ex: 0 a 1000) baseado em variáveis de comportamento e renda.
-   - `prob_default`: Probabilidade estimada de inadimplência (PD).
-   - `rating_risco`: Classificação categórica (ex: Baixo, Médio, Alto, Crítico).
-   - `comprometimento_renda`: % da renda comprometida com a dívida.
+## 📈 PROTOCOLO DE CONSTRUÇÃO DE FEATURES:
+1. **Risco e Default**:
+   - `default_flag`: 1 se LATE_DAYS > 15, senão 0.
+   - `perc_inadimplencia`: (Soma do BALANCE de inadimplentes) / (Soma do BALANCE total).
+2. **Feature Engineering (Adicione ao DataFrame)**:
+   - `score_credito`: Baseado em atraso e comprometimento (ex: 1000 - (LATE_DAYS * 5) - (comprometimento * 2)).
+   - `prob_default`: Escala 0 a 1.
+   - `rating_risco`: Categorias (A, B, C, D, E).
+   - `expected_loss`: PD * Exposure * LGD.
 
-2. **ANÁLISE DE CARTEIRA COMPLETA**:
-   - Calcule a 'Exposição Total' (EAD) somando os valores de toda a base.
-   - Analise a 'Inadimplência Real' (% de atrasos sobre o total).
-   - Distribua a carteira por faixas de Rating (Concentração de Risco).
+## ESTRUTURA DE RESPOSTA (JSON OBRIGATÓRIO):
+Responda APENAS com um objeto JSON no seguinte formato:
+{
+  "analysis_type": "Tipo de análise (ex: Risco, Exposição, etc)",
+  "thought": "Breve explicação do raciocínio estatístico",
+  "python_code": "O código python completo aqui (use as regras abaixo)"
+}
 
-3. **MODELAGEM ESTATÍSTICA**:
-   Utilize `numpy` e `pandas` para correlações entre variáveis (ex: Idade vs Inadimplência) e aplique médias móveis ou regressões simples para projeções.
-
-## Regras de Código:
-- SEMPRE salve a tabela resultante enriquecida e os indicadores principais no dicionário de saída.
-- O código deve ser robusto: trate valores nulos (`fillna`) antes de realizar cálculos matemáticos.
-- Atribua o dicionário final (contendo 'metrics', 'summary' e 'chart_data') à variável GLOBAL 'result'.
-
-IMPORTANTE: Siga rigorosamente as **REGRAS DE NEGÓCIO ESPECIALIZADAS** (Fórmulas do Especialista no contexto). Elas sobrepõem qualquer lógica padrão.
+## REGRAS DE CÓDIGO (python_code):
+- Use `pandas` e `numpy`.
+- Atribua o dicionário com 'metrics', 'dataframe_processed' e 'insights' à variável GLOBAL 'result':
+  result = {
+    "metrics": { "kpi_nome": valor, ... },
+    "dataframe_processed": df_com_novas_colunas,
+    "insights": ["Insight quantitativo 1", ...]
+  }
 """
 
 PANDAS_SYNTHESIS_SYSTEM_PROMPT = """Você é o Diretor de Análise Estatística da NTT DATA. 
@@ -51,68 +60,112 @@ class PandasAnalyticsAgent:
         self.bedrock_service = BedrockService()
         self.executor = PandasExecutorService()
 
-    def analyze(self, user_prompt: str, datasets_profiles: List[Dict[str, Any]] = None, max_rows: int = 5000, specialist_context: str = "", trace=None) -> Dict[str, Any]:
+    def analyze(self, user_prompt: str, datasets_metadata: List[Dict[str, Any]] = None, max_rows: int = 5000, specialist_context: str = "", risk_dna_context: Dict[str, Any] = None, feedback: str = "", trace=None) -> Dict[str, Any]:
         """
         Executa o fluxo completo: Geração de Código -> Execução -> Síntese de Insight.
+        Suporta feedback corretivo para auto-ajuste.
         """
         logger.info(f"[Assistente_Pandas] Iniciando fluxo de cálculo estatístico (Max Rows: {max_rows}).")
         
-        if trace:
-            trace.log_thought("Assistente Pandas", f"Iniciando análise de dados (limite de {max_rows} linhas) para identificar a melhor abordagem estatística.")
+        # Carrega o system prompt dinâmico do banco (Prioridade para regras administráveis)
+        base_system_prompt = PromptService.get_system_prompt("PandasAnalyticsAgent", PANDAS_AGENT_SYSTEM_PROMPT)
 
-        # Prepara contexto de metadados para a LLM planejar o código
+        if trace:
+            trace.log_thought("Assistente Pandas", f"Iniciando análise de dados (limite de {max_rows} linhas).")
+
+        # Prepara contexto de metadados enriquecido
         metadata_context = []
-        for ds in datasets_profiles or []:
-            metadata_context.append({
+        for ds in datasets_metadata or []:
+            ds_context = {
                 "name": ds.get("name"),
                 "sqlite_table": ds.get("sqlite_table"),
-                "profile": ds.get("data_profile", {})
-            })
+                "granularity": ds.get("data_profile", {}).get("granularity_level", "UNKNOWN"),
+                "columns": []
+            }
+            # Adiciona instruções de uso instruídas pela IA de Ingestão
+            schema = ds.get("schema_json", {})
+            if isinstance(schema, str):
+                try: schema = json.loads(schema)
+                except: schema = {}
+
+            for col in schema.get("columns", []):
+                ds_context["columns"].append({
+                    "name": col.get("name"),
+                    "role": col.get("role") or ("MEASURE" if col.get("is_value") else "DIMENSION"),
+                    "can_group": col.get("grouping_suitability") == "HIGH",
+                    "can_calculate": col.get("calculation_suitability") == "HIGH",
+                    "instruction": col.get("usage_instructions", "")
+                })
+            metadata_context.append(ds_context)
 
         # --- FASE 1: GERAÇÃO DE CÓDIGO ---
+        feedback_section = ""
+        if feedback:
+            feedback_section = f"\n\n🚨 ERROS NA TENTATIVA ANTERIOR (CORRIJA): {feedback}"
+
         planning_prompt = f"""
 Pergunta do Usuário: "{user_prompt}"
 
-=== REGRAS DE NEGÓCIO ESPECIALIZADAS (PRIORIDADE TOTAL) ===
-{specialist_context if specialist_context else "Nenhuma regra de negócio externa informada. Use lógica estatística padrão."}
-
-=== Metadados dos Datasets Disponíveis ===
+=== METADADOS E REGRAS Analíticas POR COLUNA ===
 {json.dumps(metadata_context, indent=2, ensure_ascii=False)}
 
-Gere o código Python para realizar a análise estatística. Atribua o dicionário/valor final à variável 'result'.
+=== REGRAS DE NEGÓCIO ESPECIALIZADAS (RAG/DOMAIN) ===
+{specialist_context if specialist_context else "Nenhuma regra de negócio externa informada."}
+
+=== MAPEAMENTO DE DNA DE RISCO ===
+{json.dumps(risk_dna_context, indent=2, ensure_ascii=False) if risk_dna_context else "Nenhum mapeamento de DNA disponível."}
+{feedback_section}
+
+Gere o código Python. 
+🚨 IMPORTANTE: Respeite as 'usage_instructions' e 'can_calculate' de cada coluna. Não realize agregados em colunas marcadas como 'can_calculate': false.
+Decida se agrupamentos (groupby) são necessários para responder à pergunta com precisão executiva.
         """
         
         try:
             plan = self.bedrock_service.invoke_with_json_output(
-                system_prompt=PANDAS_AGENT_SYSTEM_PROMPT,
+                system_prompt=base_system_prompt,
                 user_message=planning_prompt,
-                temperature=0.1
+                temperature=0.1,
+                max_tokens=2500
             )
             
             thought = plan.get("thought", "Planejando execução de código Pandas.")
-            if trace:
-                trace.log_thought("Assistente Pandas", f"Decidi realizar uma análise do tipo {plan.get('analysis_type')}: {thought}")
-
             code = plan.get("python_code")
             if not code:
                 raise ValueError("O assistente não gerou código Python.")
+
+            if trace:
+                trace.log_thought("Assistente Pandas", f"Decidi realizar uma análise do tipo {plan.get('analysis_type')}: {thought}")
 
             # --- FASE 2: EXECUÇÃO DO CÓDIGO ---
             logger.info(f"[Assistente_Pandas] Executando código de análise: {plan.get('analysis_type')}")
             if trace:
                 trace.start_step("Assistente Pandas: Execução")
             
-            exec_result = self.executor.execute_analysis(code, datasets_profiles, max_rows=max_rows)
+            # Determina se é análise de risco baseada na presença de DNA de risco
+            is_risk_analysis = bool(risk_dna_context and any(risk_dna_context.values()))
             
-            if trace:
-                trace.end_step("Assistente Pandas: Execução", message=f"Cálculo matemático concluído via PandasExecutorService.", metadata={"code": code, "result_summary": str(exec_result["data"])[:200]})
-
+            exec_result = self.executor.execute_analysis(
+                code, 
+                datasets_metadata, 
+                max_rows=max_rows, 
+                is_risk_analysis=is_risk_analysis
+            )
+            
             if exec_result["status"] != "success":
+                if trace:
+                    trace.end_step("Assistente Pandas: Execução", message=f"Falha na execução matemática: {exec_result.get('message')}", metadata={"code": code})
                 return {
                     "specialist": "ASSISTENTE_PANDAS",
                     "error": exec_result.get("message"),
+                    "python_code": code,
+                    "thought": thought,
                     "analysis": "Houve um erro técnico ao processar os cálculos estatísticos solicitados."
                 }
+
+            if trace:
+                result_peek = str(exec_result.get("data", ""))[:200]
+                trace.end_step("Assistente Pandas: Execução", message=f"Cálculo matemático concluído via PandasExecutorService.", metadata={"code": code, "result_summary": result_peek})
 
             # --- FASE 3: SÍNTESE DO INSIGHT ---
             if trace:
@@ -138,7 +191,8 @@ Escreva a análise final para o usuário.
             return {
                 "specialist": "ASSISTENTE_PANDAS",
                 "analysis_type": plan.get("analysis_type"),
-                "thought": plan.get("thought"),
+                "thought": thought,
+                "python_code": code,
                 "calculation_data": exec_result["data"],
                 "analysis": final_report
             }

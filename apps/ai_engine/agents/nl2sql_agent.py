@@ -7,40 +7,29 @@ import logging
 from typing import Dict, Any, List
 
 from apps.ai_engine.services.bedrock_service import BedrockService
+from apps.ai_engine.services.prompt_service import PromptService
 
 logger = logging.getLogger(__name__)
 
 NL2SQL_AGENT_SYSTEM_PROMPT = """Você é o Analista Financeiro Sênior e Especialista em SQL (NL2SQL) da NTT DATA - Agent-BI.
 Sua missão é converter perguntas de usuários em consultas SQL estratégicas que forneçam uma visão analítica completa do negócio.
 
-Ao receber uma pergunta, você deve seguir rigorosamente as **REGRAS DE NEGÓCIO ESPECIALIZADAS** (Fórmulas, Taxas, Score) fornecidas no contexto. Elas têm prioridade total sobre qualquer lógica genérica.
-
-Além disso, busque sempre:
-1. **AGREGAÇÃO TOTAL (SEM LIMITES)**: Para dashboards e análises corporativas, você deve trazer SEMPRE o conjunto completo de dados. É expressamente PROIBIDO o uso da cláusula `LIMIT` em queries de análise de risco ou performance, pois isso vicia as estatísticas e impede a visão real da carteira.
-2. **FIDELIDADE AOS DADOS**: Se o usuário pedir um diagnóstico, traga todos os registros relevantes. Confie na capacidade de processamento estatístico (Pandas) que virá após o SQL.
-3. **VISÃO TEMPORAL COMPLETA**: Garanta que o histórico completo seja recuperado para permitir o cálculo de médias móveis e tendências reais.
-
-## Regras Técnicas (SQLite):
-- Gere uma única instrução SQL (SELECT ou WITH) robusta.
-- Use APENAS as tabelas e colunas explicitamente fornecidas no contexto.
-- Utilize os relacionamentos semânticos fornecidos para realizar JOINs precisos.
-- Use CTEs ou Window Functions para cálculos complexos de ranking ou acumulados.
-- NUNCA gere instruções destrutivas (INSERT, UPDATE, DELETE, DROP).
+## REGRAS DE INTEGRIDADE ANALÍTICA:
+1. **AGREGAÇÃO CONSCIENTE**: Respeite as `usage_instructions` e as flags `can_group`. Se uma coluna tiver `can_group = false`, não a utilize no GROUP BY a menos que seja estritamente necessário para um filtro.
+2. **GRANULARIDADE**: Ao gerar JOINs, garanta que a granularidade das tabelas (`granularity`) seja compatível.
+3. **Fórmulas de Risco**: Priorize as **REGRAS DE NEGÓCIO ESPECIALIZADAS** fornecidas no contexto. Elas têm prioridade total.
 
 ## Saída Exigida (JSON):
-Retorne estritamente um JSON válido com os campos:
 {
   "sql": "A consulta SQL gerada",
   "description": "Explicação concisa voltada para o negócio",
-  "tables_used": ["tabela1", "tabela2"],
   "complexity": "LOW" | "MEDIUM" | "HIGH"
 }
 """
 
 class NL2SQLAgent:
     """
-    Assistente especializado em traduzir linguagem natural para SQL complexo 
-    usando o poder do LLM Bedrock e o contexto especializado (RAG).
+    Assistente especializado em traduzir linguagem natural para SQL complexo.
     """
     def __init__(self):
         self.bedrock_service = BedrockService()
@@ -51,8 +40,11 @@ class NL2SQLAgent:
         """
         logger.info("[Assistente_NL2SQL] Iniciando geração de SQL com contexto especializado.")
         
+        # Carrega o system prompt dinâmico do banco
+        base_system_prompt = PromptService.get_system_prompt("NL2SQLAgent", NL2SQL_AGENT_SYSTEM_PROMPT)
+
         if trace:
-            trace.log_thought("Assistente NL2SQL", "Combinando esquema das tabelas com as fórmulas técnicas de risco recuperadas da KB.")
+            trace.log_thought("Assistente NL2SQL", "Combinando esquema com as regras de granularidade e instruções de uso.")
 
         # Constrói o contexto tabular detalhado
         schema_context = []
@@ -60,30 +52,38 @@ class NL2SQLAgent:
             table_info = {
                 "sqlite_table": ds.get("sqlite_table"),
                 "name": ds.get("name"),
-                "description": ds.get("description"),
-                "columns": ds.get("schema_json", {}).get("columns", []) or ds.get("data_profile", {}).get("columns", [])
+                "granularity": ds.get("data_profile", {}).get("granularity_level", "UNKNOWN"),
+                "columns": []
             }
+            # Inclui instruções de uso analítico para guiar o SQL
+            for col in ds.get("schema_json", {}).get("columns", []):
+                table_info["columns"].append({
+                    "name": col.get("name"),
+                    "role": col.get("role"),
+                    "can_group": col.get("grouping_suitability") == "HIGH",
+                    "instruction": col.get("usage_instructions")
+                })
             schema_context.append(table_info)
 
         prompt = f"""
 Pergunta do Usuário: "{user_prompt}"
 
-=== REGRAS DE NEGÓCIO ESPECIALIZADAS (PRIORIDADE TOTAL) ===
-{specialist_context if specialist_context else "Nenhuma regra de negócio externa informada. Use lógica contábil padrão."}
+=== REGRAS DE NEGÓCIO ESPECIALIZADAS (Fórmulas do RAG/KB) ===
+{specialist_context if specialist_context else "Nenhuma regra específica."}
 
-=== SCHEMA DAS TABELAS DISPONÍVEIS ===
+=== SCHEMA DAS TABELAS E REGRAS DE USO ===
 {json.dumps(schema_context, indent=2, ensure_ascii=False)}
 
 === RELACIONAMENTOS SEMÂNTICOS (DICAS DE JOIN) ===
-{json.dumps(relationships, indent=2, ensure_ascii=False) if relationships else "Nenhum relacionamento formal informado."}
+{json.dumps(relationships, indent=2, ensure_ascii=False) if relationships else "Nenhum relacionamento formal."}
 
-Gere a SQL proposta abaixo seguindo as regras do sistema.
+Gere o SQL respeitando as regras de granularidade e instruções acima.
         """
         
         try:
             # Tenta obter a resposta estruturada do Bedrock
             result = self.bedrock_service.invoke_with_json_output(
-                system_prompt=NL2SQL_AGENT_SYSTEM_PROMPT,
+                system_prompt=base_system_prompt,
                 user_message=prompt,
                 temperature=0.1
             )
@@ -92,7 +92,7 @@ Gere a SQL proposta abaixo seguindo as regras do sistema.
                 raise ValueError("Resposta do Bedrock não é um objeto JSON válido.")
             
             if trace:
-                trace.log_thought("Assistente NL2SQL", f"Query estruturada com complexidade {result.get('complexity')}. Tabelas afetadas: {', '.join(result.get('tables_used', []))}")
+                trace.log_thought("Assistente NL2SQL", f"Query estruturada com complexidade {result.get('complexity')}.")
                 
             return {
                 "specialist": "ASSISTENTE_NL2SQL",

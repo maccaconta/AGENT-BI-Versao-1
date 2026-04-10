@@ -127,3 +127,31 @@ class GlobalSystemPrompt(TimeStampedModel):
             prompt += f"REGRAS DE COMPLIANCE:\n{self.compliance_rules}\n"
             
         return prompt
+
+
+class AgentSystemPrompt(TimeStampedModel):
+    """
+    Prompts de sistema específicos para cada agente técnico (Supervisor, Pandas, NL2SQL, etc).
+    Permite governança granular sobre o comportamento de cada componente da IA.
+    """
+    agent_key = models.CharField(
+        max_length=100, 
+        unique=True, 
+        verbose_name="Chave do Agente",
+        help_text="Ex: supervisor_agent, pandas_agent, nl2sql_agent"
+    )
+    name = models.CharField(max_length=255, verbose_name="Nome do Agente")
+    description = models.TextField(blank=True, verbose_name="Descrição/Objetivo")
+    content = models.TextField(verbose_name="System Prompt")
+    
+    is_active = models.BooleanField(default=True, verbose_name="Ativo")
+    version = models.CharField(max_length=20, default="1.0.0", verbose_name="Versão")
+
+    class Meta:
+        db_table = "governance_agent_prompts"
+        verbose_name = "System Prompt de Agente"
+        verbose_name_plural = "System Prompts de Agentes"
+        ordering = ["agent_key"]
+
+    def __str__(self):
+        return f"{self.name} ({self.agent_key})"

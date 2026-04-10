@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from apps.ai_engine.services.bedrock_service import BedrockService, BedrockInvocationError
+from apps.ai_engine.services.prompt_service import PromptService
 from apps.ai_engine.prompts.critic_prompt import (
     CRITIC_SYSTEM_PROMPT,
     build_critic_prompt,
@@ -21,11 +22,11 @@ logger = logging.getLogger(__name__)
 class CriticResult:
     """Resultado estruturado do Critic Agent."""
     score: float = 0.0
-    grade: str = "F"
+    governance_score: float = 0.0
     coverage_score: float = 0.0
     sql_score: float = 0.0
+    python_score: float = 0.0
     visual_score: float = 0.0
-    insights_score: float = 0.0
     feedback: str = ""
     issues: list = field(default_factory=list)
     suggestions: list = field(default_factory=list)
@@ -36,17 +37,18 @@ class CriticResult:
     @property
     def passes_threshold(self) -> bool:
         from django.conf import settings
-        threshold = getattr(settings, "AI_MIN_SCORE_THRESHOLD", 0.8)
-        return self.score >= threshold
+        # Rigor aumentado para governança
+        threshold = getattr(settings, "AI_MIN_SCORE_THRESHOLD", 0.85)
+        return self.score >= threshold and self.governance_score >= 0.8
 
     def to_dict(self) -> dict:
         return {
             "score": self.score,
-            "grade": self.grade,
+            "governance_score": self.governance_score,
             "coverage_score": self.coverage_score,
             "sql_score": self.sql_score,
+            "python_score": self.python_score,
             "visual_score": self.visual_score,
-            "insights_score": self.insights_score,
             "feedback": self.feedback,
             "issues": self.issues,
             "suggestions": self.suggestions,
@@ -62,14 +64,6 @@ class CriticAgentError(Exception):
 class CriticAgent:
     """
     Critic Agent: avalia rigorosamente os dashboards gerados.
-
-    Critérios de avaliação (score 0.0-1.0):
-    - Cobertura da instrução (30%)
-    - Qualidade SQL (25%)
-    - Qualidade visual (25%)
-    - Qualidade dos insights (20%)
-
-    Retorna feedback detalhado para a próxima iteração.
     """
 
     def __init__(self):
@@ -84,21 +78,11 @@ class CriticAgent:
         schema: dict,
         dataset=None,
         iteration: int = 1,
+        python_code: str = "",
+        pandas_thought: str = "",
     ) -> CriticResult:
         """
-        Avalia um dashboard gerado.
-
-        Args:
-            original_instruction: Instrução original do usuário
-            generated_html: HTML do dashboard
-            sql_queries: Lista de queries geradas
-            query_results: Resultados das queries Athena
-            schema: Schema do dataset
-            dataset: Instância do Dataset (opcional, para governança)
-            iteration: Iteração atual
-
-        Returns:
-            CriticResult com score e feedback detalhado
+        Avalia um dashboard gerado (SQL + Python + Visual).
         """
         start_time = time.time()
         logger.info(f"Critic Agent: avaliando dashboard. Iteração {iteration}")
@@ -111,23 +95,26 @@ class CriticAgent:
             query_results=query_results,
             iteration=iteration,
             schema=schema,
+            python_code=python_code,
+            pandas_thought=pandas_thought,
         )
 
-        # Buscar Governança (Persona + Compliance)
-        system_instructions = CRITIC_SYSTEM_PROMPT
+        # Buscar Governança Dinâmica (Novo AgentSystemPrompt)
+        system_instructions = PromptService.get_system_prompt("CriticAgent", CRITIC_SYSTEM_PROMPT)
+        
         if dataset and hasattr(dataset, 'project'):
             from apps.governance.models import GlobalSystemPrompt
             tenant = dataset.project.tenant
             global_policy = GlobalSystemPrompt.objects.filter(tenant=tenant, is_active=True).first()
             if global_policy:
-                # Injeta a persona do Admin no topo para que o Critic saiba o que avaliar
-                system_instructions = global_policy.generate_full_system_prompt() + "\n\n" + CRITIC_SYSTEM_PROMPT
+                system_instructions = global_policy.generate_full_system_prompt() + "\n\n" + system_instructions
 
         # Verificar se o Bedrock está disponível e configurado
         if not self._is_bedrock_available():
-            logger.info("Critic Agent: Bedrock indisponível. Pulando avaliação detalhada (Aprovação implícita).")
+            logger.info("Critic Agent: Bedrock indisponível. Pulando avaliação detalhada.")
             return CriticResult(
-                score=1.0, # Aprovado por padrão se não puder avaliar
+                score=1.0, 
+                governance_score=1.0,
                 feedback="Avaliação automática ignorada (Bedrock desativado).",
                 approved=True
             )
@@ -137,11 +124,10 @@ class CriticAgent:
             response_data = self.bedrock.invoke_with_json_output(
                 system_prompt=system_instructions,
                 user_message=prompt,
-                temperature=0.1,  # Mais determinístico para avaliação
+                temperature=0.1,
             )
         except BedrockInvocationError as e:
             logger.error(f"Critic Agent: erro Bedrock: {e}")
-            # Fallback: score baixo com erro para revisão manual se o erro for real de invocação
             return CriticResult(
                 score=0.3,
                 feedback=f"Erro na avaliação automática: {e}. Revisão manual necessária.",
@@ -153,7 +139,7 @@ class CriticAgent:
         result.execution_time_seconds = time.time() - start_time
 
         logger.info(
-            f"Critic Agent: score={result.score:.2f}, "
+            f"Critic Agent: score={result.score:.2f}, gov_score={result.governance_score:.2f}, "
             f"aprovado={result.passes_threshold}, "
             f"tempo={result.execution_time_seconds:.2f}s"
         )
@@ -164,19 +150,19 @@ class CriticAgent:
         """Parseia resposta do Critic em CriticResult."""
         try:
             score = float(data.get("score", 0.0))
-            score = max(0.0, min(1.0, score))  # Clampar entre 0 e 1
+            score = max(0.0, min(1.0, score))
 
             return CriticResult(
                 score=score,
-                grade=data.get("grade", self._score_to_grade(score)),
+                governance_score=float(data.get("governance_score", 0.0)),
                 coverage_score=float(data.get("coverage_score", 0.0)),
                 sql_score=float(data.get("sql_score", 0.0)),
+                python_score=float(data.get("python_score", 0.0)),
                 visual_score=float(data.get("visual_score", 0.0)),
-                insights_score=float(data.get("insights_score", 0.0)),
                 feedback=data.get("feedback", ""),
                 issues=data.get("issues", []),
                 suggestions=data.get("suggestions", []),
-                approved=data.get("approved", score >= 0.8),
+                approved=data.get("approved", score >= 0.85),
                 raw_response=data,
             )
         except (ValueError, TypeError) as e:

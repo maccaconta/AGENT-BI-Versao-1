@@ -4,6 +4,7 @@ from typing import Dict, Any, List
 
 from django.conf import settings
 from apps.ai_engine.services.bedrock_service import BedrockService
+from apps.ai_engine.services.prompt_service import PromptService
 
 logger = logging.getLogger(__name__)
 
@@ -43,43 +44,56 @@ class SupervisorAgent:
 
     def determine_route(self, user_prompt: str, datasets_metadata: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
-        Invoca a LLM subjacente para decidir o melhor especialista.
+        Determina a melhor rota para a solicitação do usuário.
         """
-        logger.info("[Supervisor] Iniciando análise de intenção.")
+        # Carrega o system prompt dinâmico se disponível no BD
+        system_prompt = PromptService.get_system_prompt("SupervisorAgent", SUPERVISOR_SYSTEM_PROMPT)
         
-        # Constrói o contexto resumido
-        context_str = "\nDatasets Disponíveis para contexto:\n"
-        if datasets_metadata:
-            for ds in datasets_metadata:
-                context_str += f"- {ds.get('name', 'N/A')}: {ds.get('description', '')}\n"
-        
-        prompt = f"Pergunta do Usuário: '{user_prompt}'\n{context_str}\nQual a melhor rota de processamento?"
+        prompt = f"""
+Pergunta do Usuário: "{user_prompt}"
+
+=== METADADOS DOS DATASETS DISPONÍVEIS ===
+{json.dumps(datasets_metadata, indent=2, ensure_ascii=False) if datasets_metadata else "Nenhum dataset carregado."}
+
+Analise a pergunta e o contexto para decidir a melhor rota.
+"""
         
         try:
-            response_text = self.bedrock_service.generate_text(
-                prompt=prompt,
-                system_prompt=SUPERVISOR_SYSTEM_PROMPT,
-                max_tokens=300
+            result = self.bedrock_service.invoke_with_json_output(
+                system_prompt=system_prompt,
+                user_message=prompt,
+                temperature=0.1
             )
             
-            # Sanitiza a resposta caso a llm ponha ```json ... ```
-            cleaned_text = response_text.replace("```json", "").replace("```", "").strip()
-            decision_json = json.loads(cleaned_text)
+            # Usa o parser resiliente do serviço para evitar falhas de formatação
+            decision_json = self.bedrock_service._parse_json_response(response_text)
+            
+            if not decision_json:
+                raise ValueError("Supervisor não conseguiu gerar uma decisão JSON válida.")
             
             route = decision_json.get("route", "ROUTE_NL2SQL")
+            
+            # Validação de rota: garante que seja uma das opções válidas
+            valid_routes = ["ROUTE_PANDAS", "ROUTE_NL2SQL", "ROUTE_KB_RAG"]
+            if route not in valid_routes:
+                logger.warning(f"[Supervisor] Rota inválida '{route}' retornada pela LLM. Usando ROUTE_PANDAS como padrão.")
+                route = "ROUTE_PANDAS"
+                decision_json["route"] = route
+                decision_json["reasoning"] += " (rota corrigida para análise estatística por segurança)"
+            
             logger.info(f"[Supervisor] Rota Selecionada: {route} - Motivo: {decision_json.get('reasoning')}")
             
             return decision_json
             
         except json.JSONDecodeError as e:
-            logger.error(f"[Supervisor] Falha ao parear JSON da LLM: {e}. Fallback para ROUTE_NL2SQL.")
+            logger.error(f"[Supervisor] Falha ao parsear JSON da LLM: {e}. Fallback para ROUTE_PANDAS (risco-sensível).")
             return {
-                "reasoning": "Fallback automático devido à falha de parse.",
-                "route": "ROUTE_NL2SQL"
+                "reasoning": "Fallback automático devido à falha de parse JSON. Usando análise estatística por segurança.",
+                "route": "ROUTE_PANDAS"
             }
         except Exception as e:
-            logger.error(f"[Supervisor] Falha na análise: {e}. Fallback para ROUTE_NL2SQL.")
+            logger.error(f"[Supervisor] Falha na análise: {e}. Fallback para ROUTE_PANDAS (risco-sensível).")
             return {
-                "reasoning": "Erro na invocação da LLM.",
-                "route": "ROUTE_NL2SQL"
+                "reasoning": "Erro na invocação da LLM. Usando análise estatística por segurança.",
+                "route": "ROUTE_PANDAS"
             }

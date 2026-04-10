@@ -191,10 +191,12 @@ def process_dataset_task(self, dataset_id: str, trace_id: str | None = None):
             if ai_analysis.get("strategic_insights"):
                 dataset.data_profile_json["ai_strategic_insights"] = ai_analysis["strategic_insights"]
             
-            # Diagnóstico de Tabela Fato (Governance)
-            if "is_fact_table" in ai_analysis:
-                dataset.data_profile_json["is_fact_table"] = ai_analysis["is_fact_table"]
-                dataset.data_profile_json["is_fact_table_reasoning"] = ai_analysis.get("is_fact_table_reasoning", "")
+            # Diagnóstico de Granularidade e Tabela Fato (Governance)
+            if ai_analysis.get("granularity_level"):
+                dataset.data_profile_json["granularity_level"] = ai_analysis["granularity_level"]
+                dataset.data_profile_json["granularity_keys"] = ai_analysis.get("granularity_keys", [])
+                # Compatibilidade com legacy 'is_fact_table'
+                dataset.data_profile_json["is_fact_table"] = (ai_analysis["granularity_level"] == "HISTORICAL")
 
             # 3. Atualiza Metadados das Colunas (is_key, description, etc.)
             col_mapping = ai_analysis.get("column_mapping", {})
@@ -213,9 +215,19 @@ def process_dataset_task(self, dataset_id: str, trace_id: str | None = None):
                     elif role == "DIMENSION": col["is_category"] = True
                     elif role == "MEASURE": col["is_value"] = True
                     
+                    # --- NOVOS CAMPOS DE DOMÍNIO ---
+                    col["grouping_suitability"] = mapping.get("grouping_suitability", "MEDIUM")
+                    col["calculation_suitability"] = mapping.get("calculation_suitability", "NONE")
+                    col["usage_instructions"] = mapping.get("usage_instructions", "")
+                    
                     # Hint de formato de data
                     if mapping.get("date_format_hint"):
                         col["date_format_hint"] = mapping["date_format_hint"]
+                    
+                    # DNA de RISCO (NOVA PERSISTÊNCIA)
+                    col["risk_dna_marker"] = mapping.get("risk_dna_marker")
+                    col["is_elected_for_risk"] = mapping.get("is_elected_for_risk", False)
+                    col["reasoning"] = mapping.get("reasoning") or col.get("reasoning")
 
             dataset.schema_json["columns"] = columns
             dataset.save(update_fields=["description", "data_profile_json", "schema_json", "updated_at"])
