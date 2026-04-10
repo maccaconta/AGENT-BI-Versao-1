@@ -6,13 +6,13 @@ O Agent-BI não utiliza prompts únicos. Cada instrução enviada ao Amazon Bedr
 
 ### A. Master Prompt (DNA Agent-BI)
 - **Nível**: Plataforma (Imutável por projeto).
-- **Conteúdo**: Instruções de orquestração, padrões de design NTT DATA e regras de uso da biblioteca visual.
+- **Conteúdo**: Orquestração, padrões de design NTT DATA e regras de uso da biblioteca visual.
 
 ### B. Persona Especialista (Diretriz Mestre)
-- **Nível**: Projeto (Customizável via Prompt Templates no SQLite).
+- **Nível**: Projeto (Customizável via `AgentSystemPrompt` no DB).
 - **Prioridade**: **MÁXIMA**. Injetado como instrução de sistema ou contexto prioritário.
-- **Conteúdo**: Define o "tom de voz" e o conhecimento técnico específico (ex: Fórmulas de Risco de Crédito, Logística, Tesouraria).
-- **Injeção**: Recuperado via `project.specialist_prompt_id` e injetado via orquestrador.
+- **Conteúdo**: Define o "DNA" técnico (ex: Fórmulas de Risco de Crédito, Logística, Tesouraria).
+- **Sincronização**: Gerenciado via comando `seed_agent_prompts`.
 
 ### C. Global Compliance (Cerca Elétrica)
 - **Nível**: Tenant/Corporativo.
@@ -20,44 +20,61 @@ O Agent-BI não utiliza prompts únicos. Cada instrução enviada ao Amazon Bedr
 
 ---
 
-## 2. Pipeline de Dados e Profiling (Semântica IA)
-A IA realiza um enriquecimento semântico antes da análise, garantindo que colunas como "SLC_CLI" sejam interpretadas como "Saldo devedor do Cliente".
+## 2. Mecanismos de Sincronização Analítica (Novidade)
 
-1. **Ingestão**: O arquivo é processado e convertido para Parquet.
-2. **Interpretador Semântico (DataInterpreterAgent)**:
-   - Utiliza a **Converse API (Amazon Nova)** para inferir o schema.
-   - Traduz nomes técnicos para nomes de negócio baseados no **Especialista de Domínio**.
-   - Gera o **Diagnóstico Executivo** (Resumo Estratégico do Dataset).
-3. **Auto-Profiling**: O sistema extrai metadados JSON (Min, Max, Outliers, Perfis Temporais).
+### A. Dataset Shadowing (Virtualização de Metadados)
+Para resolver a "surdez" entre Agentes (Pandas vs Dashboard), implementamos o **Shadowing**:
+- Quando o Pandas gera uma tabela enriquecida (`tmp_enriched_*`), o Orquestrador **sobrescreve** os metadados da tabela original no payload da LLM.
+- **Efeito**: O Gerador de Dashboard enxerga a tabela enriquecida como se fosse a fonte primária, forçando o uso de KPIs inteligentes em vez de dados brutos.
+
+### B. Analytical Memory (Persistência de Linhagem)
+- O sistema mantém um snapshot dos metadados enriquecidos na sessão.
+- Garante que colunas calculadas (ex: `score_risco`) permaneçam disponíveis para o Dashboard mesmo após múltiplas iterações.
 
 ---
 
-## 3. Orquestração de Agentes (Cognitive Loop)
-O `IncrementalDashboardAgentService` gerencia a inteligência multiprocessada:
+## 3. Motor Analítico: DNA de Risco e Rigor Estatístico
+
+### A. Framework de 12 Métricas de Elite
+O motor Pandas agora possui um mandato para calcular (quando viável):
+1. `Default Flag`, 2. `Aging Bucket`, 3. `EAD Default`, 4. `Saldo Default`, 5. `Recuperação Líquida`, 6. `Ticket Médio`, 7. `Variação %`, 8. `Vintage`, 9. `Faixa Score`, 10. `Share Exposição`, 11. `Expected Loss`, 12. `Prob Default`.
+
+### B. Hierarquia Analítica (5 Etapas)
+O Agente segue a ordem: **1. Risco > 2. Perda > 3. Concentração > 4. Performance > 5. Liquidez.**
+
+### C. Técnicas Estatísticas e Validação
+- **Testes de Hipótese**: Uso de `scipy.stats` (T-test, ANOVA) com reporte de **p-value** (significância se $p < 0.05$).
+- **Modelagem Preditiva**: Regressões Logísticas rápidas para `default_flag`.
+- **Validação de Modelo**: Cálculo obrigatório de **Gini**, **KS** e **AUC** para scores gerados.
+
+---
+
+## 4. Orquestração de Agentes (Cognitive Loop)
 
 ### 1. Supervisor / Planner
-Decide a estratégia: **ROUTE_NL2SQL** (Consultas) ou **ROUTE_PANDAS** (Estatística/Risco).
-- Em rota de Risco, o Supervisor injeta o contexto do Especialista para forçar a rota estatística.
+Decide a estratégia: **ROUTE_NL2SQL** (Consultas) ou **ROUTE_PANDAS** (Estatística/Risco). Escolhe a rota mais simples que resolva o problema.
 
 ### 2. NL2SQL (O Tradutor)
-Transforma linguagem natural em query SQL. Respeita os sinônimos de colunas inferidos pelo Interpretador Semântico.
+Transforma linguagem natural em query SQL eficiente.
 
-### 3. Pandas Executor (O Analista Quantitativo)
-O "Cérebro" estatístico da plataforma.
-- **Capacidade**: Processamento de até **50.000 linhas** por execução síncrona.
-- **Feature Engineering Obrigatório**: O agente é instruído a CRIAR novas colunas (ex: `score_credito`, `prob_default`, `rating_risco`) e não apenas resumir as existentes.
-- **Modelagem**: Realiza correlações, regressões e segmentações de risco.
+### 3. Pandas Analytics (O Cientista de Dados)
+O "Cérebro" estatístico. Realiza Feature Engineering e validação estatística rigorosa.
 
-### 4. HTML Renderer (O Designer)
-Transforma os dados enriquecidos em componentes React/Next.js seguindo o design system premium.
+### 4. Dashboard Incremental (O Diretor de Estratégia)
+Transforma os dados enriquecidos em interfaces premium.
+- **Mandato de Rigor**: Se houver análise estatística, é **obrigatório** incluir um Card de Validação Técnica no Dashboard.
 
 ---
 
-## 4. Conectividade Amazon Bedrock
-- **Motor Principal**: Amazon Nova (via API Converse para suporte a mensagens complexas e JSON estruturado).
-- **Segurança**: Fallback para **Heurística de Emergência (Zero-Infra)** caso a conexão com a AWS falhe, garantindo que o sistema nunca pare.
+## 5. Infraestrutura e Conectividade
+- **Next.js 16**: Utiliza `proxy.ts` para gestão de rotas e segurança de middleware.
+- **Amazon Bedrock (Nova)**: Motor principal para processamento multimodal e JSON estruturado.
+- **Shadowing de DB**: Snapshot de esquemas para garantir consistência visual.
 
 ---
 
-## 5. Rastreabilidade e Auditoria (Traces)
-Cada dashboard gerado possui um rastro completo (Trace) contendo o prompt final concatenado. Isso permite exportar e auditar exatamente quais instruções guiaram a decisão da IA.
+## 6. Rastreabilidade e Auditoria (Traces)
+Cada dashboard possui uma trilha de auditoria contendo:
+- O código Python original do Pandas.
+- O SQL gerado pelo Dashboard Agent.
+- O raciocínio estatístico (`analyticalThoughtProcess`).

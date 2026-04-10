@@ -236,8 +236,14 @@ class IncrementalDashboardAgentService:
             # --- NOVO: Materialização de Resultados Enriquecidos ---
             calculation_data = p_result.get("calculation_data", {})
             df_enriched = None
+            statistical_analysis = None
             if isinstance(calculation_data, dict):
                 df_enriched = calculation_data.get("dataframe_processed")
+                statistical_analysis = calculation_data.get("statistical_analysis")
+            
+            if statistical_analysis:
+                context["statistical_analysis"] = statistical_analysis
+                context["analytical_memory"]["statistical_analysis"] = statistical_analysis
             
             if df_enriched is not None:
                 from apps.datasets.services.sqlite_analytics_store import build_sqlite_table_name
@@ -674,23 +680,17 @@ class IncrementalDashboardAgentService:
 
         for ds in context.get("datasets") or []:
             ds_copy = ds.copy()
-            # Se este dataset foi o que sofreu enriquecimento (simplificamos assumindo o primeiro ou correspondência de schema)
-            # No futuro podemos fazer match por sqlite_table original
             if materialized_table:
-                # Shadowing: A IA verá a tabela materializada como se fosse a original, mas com o schema expandido
+                # [DRACONIAN SHADOWING]
+                # Ocultamos a tabela física original e a substituímos pela versão enriquecida (inteligente)
+                logger.debug(f"[Shadowing] Mascarando dataset {ds_copy.get('name')} com tabela inteligente {materialized_table}")
                 ds_copy["sqlite_table"] = materialized_table
-                # Mescla colunas originais com as calculadas se necessário, ou usa apenas o novo schema
-                if ds_copy.get("schema_json"):
-                    # Garantimos que as novas colunas apareçam nos metadados para a LLM
-                    current_cols = [c.get("name") for c in ds_copy["schema_json"].get("columns", [])]
-                    for new_col in materialized_schema:
-                        if new_col not in current_cols:
-                            ds_copy["schema_json"]["columns"].append({
-                                "name": new_col,
-                                "type": "calculated",
-                                "description": "Coluna calculada via Pandas (Alta Fidelidade)"
-                            })
                 
+                # Injetamos as novas colunas no schema para visibilidade da LLM
+                if materialized_schema and ds_copy.get("schema_json"):
+                    # Aqui apenas listamos os nomes das colunas novas no schema simplificado
+                    ds_copy["schema_json"]["columns"] = materialized_schema
+            
             datasets_shadowed.append(ds_copy)
 
         # 2. Payload de contexto analitico (Reduzido para evitar saturação)
@@ -704,7 +704,8 @@ class IncrementalDashboardAgentService:
             "datasets": datasets_shadowed, # SHADOWED: A IA verá apenas a fonte inteligente
             "semantic_mapping": context.get("semantic_mapping") if not materialized_table else None,
             "previousBusinessLogic": context.get("previousBusinessLogic"),
-            "analytical_memory": context.get("analytical_memory")
+            "analytical_memory": context.get("analytical_memory"),
+            "statistical_analysis": context.get("statistical_analysis") # INJETADO: Para cards de rigor estatístico
         }
 
         # 3. Mandato de Exibição (Injetado apenas se houver dados enriquecidos)

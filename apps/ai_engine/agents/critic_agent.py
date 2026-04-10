@@ -35,6 +35,21 @@ class CriticResult:
     raw_response: dict = field(default_factory=dict)
 
     @property
+    def grade(self) -> str:
+        """Converte score numérico em grade letra."""
+        score = self.score
+        if score >= 0.95: return "A+"
+        if score >= 0.90: return "A"
+        if score >= 0.85: return "A-"
+        if score >= 0.80: return "B+"
+        if score >= 0.75: return "B"
+        if score >= 0.70: return "B-"
+        if score >= 0.65: return "C+"
+        if score >= 0.60: return "C"
+        if score >= 0.50: return "D"
+        return "F"
+
+    @property
     def passes_threshold(self) -> bool:
         from django.conf import settings
         # Rigor aumentado para governança
@@ -191,26 +206,3 @@ class CriticAgent:
         
         return bool(aws_key and aws_secret)
 
-    @staticmethod
-    def _score_to_grade(score: float) -> str:
-        """Converte score numérico em grade letra."""
-        if score >= 0.95:
-            return "A+"
-        elif score >= 0.90:
-            return "A"
-        elif score >= 0.85:
-            return "A-"
-        elif score >= 0.80:
-            return "B+"
-        elif score >= 0.75:
-            return "B"
-        elif score >= 0.70:
-            return "B-"
-        elif score >= 0.65:
-            return "C+"
-        elif score >= 0.60:
-            return "C"
-        elif score >= 0.50:
-            return "D"
-        else:
-            return "F"

@@ -102,6 +102,7 @@ Perguntas sobre risco de crédito NÃO devem ir automaticamente para ROUTE_PANDA
 Elas devem ir para ROUTE_PANDAS somente quando exigirem:
 - construção de variáveis analíticas intermediárias,
 - aplicação de fórmulas ou KPIs especializados,
+- **Termos de Risco Mestre**: Presença de "Perda Esperada" (Expected Loss), "Gini", "KS", "AUC", "PD", "LGD", "EAD", "Vintage", "Cohort" ou "Regressão".
 - ou regras de negócio avançadas de risco.
 
 Se a pergunta for apenas descritiva e resolvível diretamente com SQL, use ROUTE_NL2SQL.
@@ -117,6 +118,7 @@ Antes de escolher a rota, responda internamente:
 ## CASOS AMBÍGUOS
 - Se SQL resolver de forma direta, segura e sem empobrecer a análise, escolha ROUTE_NL2SQL.
 - Se o KPI depender de engenharia analítica intermediária, escolha ROUTE_PANDAS.
+- **MANDATÓRIO**: Qualquer pedido de "Validação", "Métrica de Performance de Modelo" ou "Rigor Estatístico" DEVE ser ROUTE_PANDAS.
 - Em risco de crédito, priorize ROUTE_PANDAS quando houver necessidade de variáveis derivadas segundo prática financeira.
 
 ## Saída Exigida
@@ -136,15 +138,57 @@ Sua missão é transformar dados brutos em DataFrames enriquecidos com KPIs de a
 - **CÁLCULOS PROIBIDOS**: NUNCA realize .sum() ou .mean() em colunas de perfil (Idade, IDs, CPFs). Use-as apenas em .groupby().
 - **DNA DE RISCO**: Utilize obrigatoriamente as colunas marcadas como BALANCE, INCOME, LATE_DAYS e LIMIT para os cálculos abaixo.
 
-## 📈 PROTOCOLO DE CONSTRUÇÃO DE FEATURES:
-1. **Risco e Default**:
-   - `default_flag`: 1 se LATE_DAYS > 15, senão 0.
-   - `perc_inadimplencia`: (Soma do BALANCE de inadimplentes) / (Soma do BALANCE total).
-2. **Feature Engineering (Adicione ao DataFrame)**:
-   - `score_credito`: Baseado em atraso e comprometimento (ex: 1000 - (LATE_DAYS * 5) - (comprometimento * 2)).
-   - `prob_default`: Escala 0 a 1.
-   - `rating_risco`: Categorias (A, B, C, D, E).
-   - `expected_loss`: PD * Exposure * LGD.
+## 📈 PROTOCOLO DE CONSTRUÇÃO DE FEATURES (DNA DE RISCO):
+Siga a **Hierarquia de Seleção**: 1. Risco > 2. Perda > 3. Concentração > 4. Performance > 5. Liquidez.
+
+### Etapa 1: Feature Engineering (Métricas Mandatórias se dados disponíveis):
+- `dias_em_atraso`: Dias passados do vencimento.
+- `aging_bucket`: Faixas de atraso (0, 1-15, 16-30, 31-60, 61-90, 90+).
+- `ead_default`: Valor total em risco no momento do default.
+- `saldo_default`: Saldo devedor total de contratos em default.
+- `recuperacao_liquida`: `RECOVERY` - custos de cobrança (se houver).
+- `ticket_medio`: `BALANCE` / Contagem de Contratos.
+- `variacao_%`: Delta percentual entre períodos (MoM, YoY).
+- `faixa_score`: Categorização de `CREDIT_SCORE` em decis.
+- `vintage`: Tempo de vida do contrato desde `ORIGINATION_DATE`.
+- `share_exposicao`: % de participação do cliente no saldo total do segmento.
+
+### Etapa 2: Técnicas Analíticas e Estatísticas:
+1. **Descritiva**: Agregações, Cohort, Vintage (se houver data), Pareto (80/20 de risco).
+2. **Diagnóstica**: `df.corr()` para identificar drivers de deterioração.
+3. **Estatística**: Aplique `scipy.stats` (T-test, ANOVA) para validar diferenças entre segmentos. **Reporte p-value (significância se p < 0.05)**.
+4. **Preditiva**: Use `sklearn` para modelos leves (LogisticRegression) para prever `default_flag`.
+5. **Validação**: Calcule Gini, KS e AUC para modelos de score gerados.
+
+### Etapa 3: Performance:
+- Se o dataset for grande (> 2000 linhas), evite loops e prefira operações vetorizadas.
+- Use modelos lineares rápidos; evite Random Forest/Boosting em tempo real.
+
+## 📚 BIBLIOTECA DE FÓRMULAS MESTRE (COPY-PASTE SAFE):
+Utilize estes snippets para garantir precisão bancária:
+
+1. **Gini (via AUC)**:
+   ```python
+   from sklearn.metrics import roc_auc_score
+   # Use: gini = 2 * roc_auc_score(df['default_flag'], df['score_credito']) - 1
+   ```
+
+2. **KS (Kolmogorov-Smirnov)**:
+   ```python
+   from scipy.stats import ks_2samp
+   # Use: ks = ks_2samp(df[df['default_flag']==1]['score_credito'], df[df['default_flag']==0]['score_credito']).statistic
+   ```
+
+3. **Expected Loss (Perda Esperada)**:
+   ```python
+   # PD = df['prob_default'], EAD = df['valor_exposicao'], LGD = 0.5 (fallback)
+   # EL = PD * EAD * LGD
+   ```
+
+4. **Curva de Lorenz (Opcional)**:
+   ```python
+   # np.cumsum(np.sort(df['balance'])) / df['balance'].sum()
+   ```
 
 ## ESTRUTURA DE RESPOSTA (JSON OBRIGATÓRIO):
 Responda APENAS com um objeto JSON no seguinte formato:
@@ -160,6 +204,10 @@ Responda APENAS com um objeto JSON no seguinte formato:
   result = {
     "metrics": { "kpi_nome": valor, ... },
     "dataframe_processed": df_com_novas_colunas,
+    "statistical_analysis": { 
+         "tests": [{"name": "T-Test/ANOVA", "p_value": 0.01, "significant": True, "description": "..."}, ...],
+         "validation": {"gini": 0.0, "ks": 0.0, "auc": 0.0} 
+    },
     "insights": ["Insight quantitativo 1", ...]
   }""",
                 "description": "Agente responsável por cálculos estatísticos e feature engineering."
@@ -272,13 +320,16 @@ Sua missão é dar alma e contexto de negócio aos dados brutos ingeridos, ident
    - `INCOME`: Renda mensal ou faturamento comprovado.
    - `LIMIT`: Limite de crédito total aprovado.
    - `LATE_DAYS`: Dias em atraso (DPD - Days Past Due).
-   - `EXPOSURE`: Valor em risco na data base (EAD - Exposure at Default).
-   - `PROBABILITY_OF_DEFAULT`: Percentual de probabilidade de inadimplência (PD).
-   - `LOSS_GIVEN_DEFAULT`: Percentual de perda dado o default (LGD).
-   - `RECOVERY`: Valores recuperados pós-default.
-   - `COLLATERAL`: Valor de garantias (imóveis, veículos, CDBs).
-   - `CREDIT_SCORE`: Pontuação quantitativa de crédito (Bureaus ou Interno).
-   - `DEFAULT_FLAG`: Indicador binário de inadimplência (0 ou 1).
+   - `EXPOSURE`: Valor em risco na data base (EAD, Exposure, Saldo em Risco).
+   - `PROBABILITY_OF_DEFAULT`: Probabilidade de inadimplência (PD, Probabilidade, Prob_Default, p_default).
+   - `LOSS_GIVEN_DEFAULT`: Perda dado o default (LGD, Loss_Given, Severidade).
+   - `RECOVERY`: Valores recuperados pós-default (Recovery, Recuperacao, Recuperado).
+   - `COLLATERAL`: Valor de garantias (Garantia, Collateral, Alienacao).
+   - `CREDIT_SCORE`: Pontuação quantitativa (Score, Serasa, SPC, Rating_Num, Bureau).
+   - `DEFAULT_FLAG`: Indicador binário (Inadimplente, Default, Atraso_GT_15, Status_Risco).
+   - `ORIGINATION_DATE`: Data de início do contrato/crédito (safra, Concessao, Abertura).
+   - `INSTALLMENT_AMT`: Valor da parcela/prestação mensal (Parcela, Prestacao).
+   - `HISTORICAL_BUCKET`: Status de atraso histórico (mês anterior, Anterior_Aging).
 
 ## Saída Exigida (JSON):
 {
@@ -370,7 +421,8 @@ Se você receber uma `materialized_table` e um `materialized_schema`, o sistema 
 1. **FONTES ATUALIZADAS**: Os metadados em `datasets` já foram sobrescritos para apontar para a tabela inteligente.
 2. **MANDATÓRIO**: Utilize as novas colunas (ex: `score_risco`, `taxa_risco`, `prob_default`) em todos os KPIs.
 3. **SQL PROPOSAL**: Você DEVE validar que sua query `sqlProposal.sql` utiliza o nome da tabela física recebida no campo `sqlite_table` (que será o nome da `materialized_table`).
-4. **PRIORIDADE**: Dados processados pelo Pandas têm precedência total sobre colunas brutas de mesma categoria.
+4. **SHADOWING DRACONIANO (MANDATÓRIO)**: Se você receber uma `materialized_table`, você está PROIBIDO de utilizar o nome da tabela original no SQL. A única fonte de verdade é a tabela materializada. Se tentar ler da original, a análise falhará.
+5. **RIGOR ESTATÍSTICO**: Se o contexto contiver resultados de `statistical_analysis` (p-values, Gini, KS), você DEVE criar um componente visual (ex: Card de Validação Técnica) para reportar o rigor da análise.
 
 ## 📈 VISUALIZAÇÃO ESTRATÉGICA E AUDITORIA:
 Você tem autonomia para decidir os componentes, mas deve seguir estas REGRAS DE GOVERNANÇA:

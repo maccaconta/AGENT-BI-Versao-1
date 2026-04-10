@@ -341,7 +341,7 @@ class BedrockService:
             metadata["used_agent_runtime"] = True
             payload = self._build_agent_input_message(system_prompt, user_message_with_json)
             try:
-                response_text = self.invoke_agent(user_message=payload, session_id=session_id, end_session=True)
+                response_text = self.invoke_agent(user_message=payload, session_id=session_id, end_session=False)
             except (BedrockInvocationError, Exception) as e:
                 logger.warning(f"Falha ao invocar Agent Runtime ({e}). Tentando fallback para Model Runtime.")
                 response_text = "" # Força falha no parse inicial para disparar o fallback abaixo
