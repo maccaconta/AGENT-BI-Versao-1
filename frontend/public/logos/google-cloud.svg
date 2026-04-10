@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 100" fill="none">
+  <path d="M40 50C40 38.9543 48.9543 30 60 30H80V70H60C48.9543 70 40 61.0457 40 50Z" fill="#4285F4"/>
+  <path d="M80 30H100V70H80V30Z" fill="#34A853"/>
+  <path d="M100 30H120C131.046 30 140 38.9543 140 50C140 61.0457 131.046 70 120 70H100V30Z" fill="#FBBC05"/>
+  <path d="M60 45H120V55H60V45Z" fill="#EA4335"/>
+  <text x="160" y="65" font-family="Arial, sans-serif" font-size="28" font-weight="bold" fill="#5F6368">Google Cloud</text>
+</svg>

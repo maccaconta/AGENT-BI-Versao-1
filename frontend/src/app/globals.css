@@ -1,0 +1,105 @@
+@import "tailwindcss";
+
+:root {
+  /* Paleta Clean Luxury - Nudes/Bege */
+  --lux-bg: #Fef4e6;
+  --lux-card: #D9cbc0;
+  --lux-border: #Ad9c92;
+  --lux-muted: #7A645b;
+  --lux-text: #513830;
+  
+  --background: var(--lux-bg);
+  --foreground: var(--lux-text);
+}
+
+.dark {
+  /* Paleta Onyx Profundo - Luxo Absoluto */
+  --lux-bg: #080707;
+  --lux-card: #171311;
+  --lux-border: #5c514b;
+  --lux-muted: #cabdb5;
+  --lux-text: #f6f1ed;
+  --lux-accent: #e0be7d; /* Metallic Antique Gold */
+
+  --background: var(--lux-bg);
+  --foreground: var(--lux-text);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  
+  --color-lux-bg: var(--lux-bg);
+  --color-lux-card: var(--lux-card);
+  --color-lux-border: var(--lux-border);
+  --color-lux-muted: var(--lux-muted);
+  --color-lux-text: var(--lux-text);
+  
+  --font-sans: var(--font-inter);
+  --font-serif: var(--font-playfair);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* 
+  ===== UI COMPONENT TOKENS =====
+  Painéis foscos (Clean Luxury) com sombras muito suaves.
+*/
+.glass-panel {
+  background-color: color-mix(in srgb, var(--lux-card) 60%, transparent);
+  backdrop-filter: blur(12px);
+  border: 1px solid color-mix(in srgb, var(--lux-border) 40%, transparent);
+  border-radius: 1rem;
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.05);
+}
+
+.dark .glass-panel {
+  background-color: color-mix(in srgb, var(--lux-card) 88%, transparent);
+  border-color: color-mix(in srgb, var(--lux-border) 72%, transparent);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.32);
+}
+
+.glass-button {
+  background-color: var(--lux-text);
+  color: var(--lux-bg);
+  border-radius: 0.5rem;
+  padding: 0.5rem 1rem;
+  font-weight: 500;
+  transition: all 0.2s ease-in-out;
+  box-shadow: 0 4px 14px 0 color-mix(in srgb, var(--lux-text) 30%, transparent);
+}
+.glass-button:hover {
+  background-color: color-mix(in srgb, var(--lux-text) 85%, black);
+  transform: translateY(-1px);
+}
+
+.glass-input {
+  background-color: color-mix(in srgb, var(--lux-bg) 70%, transparent);
+  border: 1px solid var(--lux-border);
+  border-radius: 0.5rem;
+  padding: 0.5rem 1rem;
+  outline: none;
+  transition: all 0.2s ease;
+  color: var(--lux-text);
+}
+.glass-input:focus {
+  border-color: var(--lux-text);
+  box-shadow: 0 0 0 1px var(--lux-text);
+}
+
+.dark .glass-input {
+  background-color: color-mix(in srgb, var(--lux-card) 86%, transparent);
+  border-color: color-mix(in srgb, var(--lux-border) 82%, transparent);
+  color: var(--lux-text);
+}
+
+.dark .glass-button {
+  box-shadow: 0 6px 22px color-mix(in srgb, var(--lux-accent) 22%, transparent);
+}

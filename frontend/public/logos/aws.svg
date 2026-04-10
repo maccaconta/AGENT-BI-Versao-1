@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <path d="M20 50C20 33.4315 33.4315 20 50 20C66.5685 20 80 33.4315 80 50C80 66.5685 66.5685 80 50 80C33.4315 80 20 66.5685 20 50Z" fill="#FF9900" fill-opacity="0.1"/>
+  <path d="M30 65C35 68 42 70 50 70C58 70 65 68 70 65" stroke="#FF9900" stroke-width="4" stroke-linecap="round"/>
+  <path d="M65 60L75 65L65 70" stroke="#FF9900" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="50" y="45" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#232F3E" text-anchor="middle">AWS</text>
+  <text x="50" y="55" font-family="Arial, sans-serif" font-size="6" fill="#232F3E" text-anchor="middle" letter-spacing="2">PARTNER</text>
+</svg>
